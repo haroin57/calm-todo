@@ -1,92 +1,101 @@
 # Calm Todo
 
-「静かに背中を押す」タスク管理アプリ。機能美と低認知負荷を両立し、ユーザーの生産性と達成感を自然に高める。
+シンプルで美しいオフラインタスク管理アプリ。アカウント登録不要で、データは全てローカルに保存されます。
 
-## Features
+## 特徴
 
-- **Cross-platform**: Windows desktop app + Web browser
-- **Real-time sync**: Firebase-powered data synchronization
-- **AI Task Decomposition**: GPT-4o-mini powered task breakdown
-- **Beautiful UI**: Calm Industrial design aesthetic
-- **Focus Mode**: Distraction-free task view
-- **Progress Tracking**: Daily progress ring, weekly heatmap, streak counter
+- **完全オフライン**: データはローカルストレージに保存。インターネット接続不要
+- **システムトレイ常駐**: 閉じてもバックグラウンドで動作。トレイからクイック追加
+- **カレンダー連携**: ICSエクスポートでGoogleカレンダー・Outlook・Windowsカレンダーに連携
+- **AIタスク分解**: Claude APIでタスクをサブタスクに自動分解
+- **リマインダー**: 単発・週間リマインダーでタスクを忘れない
+- **期日管理**: 期日を過ぎたタスクは通知でお知らせ
+- **美しいUI**: Calm Industrialデザイン。目に優しい配色
 
-## Tech Stack
+## スクリーンショット
 
-- **Frontend**: React 18, TypeScript, Vite
-- **Desktop**: Tauri 2.x
-- **Backend**: Firebase (Auth, Firestore)
-- **State Management**: Zustand
-- **Animation**: Framer Motion
-- **AI**: OpenAI GPT-4o-mini
+![Calm Todo](https://raw.githubusercontent.com/haroin57/calm-todo/main/screenshot.png)
 
-## Getting Started
+## 技術スタック
 
-### Prerequisites
+- **フロントエンド**: React 18, TypeScript, Vite
+- **デスクトップ**: Tauri 2.x (Rust)
+- **状態管理**: React Hooks + localStorage
+- **アニメーション**: Framer Motion
+- **AI**: Anthropic Claude API
+
+## インストール
+
+### 必要環境
 
 - Node.js 18+
-- Rust (for Tauri)
-- Firebase project
-- OpenAI API key (optional, for AI features)
+- Rust (Tauri用)
+- Windows 10/11
 
-### Installation
+### 開発環境のセットアップ
 
-1. Clone the repository:
+1. リポジトリをクローン:
    ```bash
-   git clone https://github.com/yourusername/calm-todo.git
+   git clone https://github.com/haroin57/calm-todo.git
    cd calm-todo
    ```
 
-2. Install dependencies:
+2. 依存関係をインストール:
    ```bash
    npm install
    ```
 
-3. Create `.env` file:
+3. 開発サーバーを起動:
    ```bash
-   cp .env.example .env
+   # Web開発
+   npm run dev
+
+   # デスクトップ開発 (Tauri)
+   npm run tauri dev
    ```
 
-4. Configure Firebase:
-   - Create a Firebase project at https://console.firebase.google.com
-   - Enable Google Authentication
-   - Create a Firestore database
-   - Copy your config values to `.env`
-
-### Development
+### ビルド
 
 ```bash
-# Web development
-npm run dev
-
-# Desktop development (Tauri)
-npm run tauri dev
-```
-
-### Build
-
-```bash
-# Web build
+# Webビルド
 npm run build
 
-# Desktop build
+# デスクトップビルド
 npm run tauri build
 ```
 
-## Keyboard Shortcuts
+## 使い方
 
-| Key | Action |
-|-----|--------|
-| `n` | New task |
-| `Enter` | Complete task |
-| `e` | Edit task |
-| `d` | Delete task |
-| `↑/↓` | Navigate tasks |
-| `Ctrl+K` | Command palette |
-| `Ctrl+F` | Focus mode |
-| `Ctrl+D` | AI decompose |
-| `Esc` | Close modal |
+### タスクの追加
 
-## License
+1. 入力欄にタスクを入力してEnterキーまたは「追加」ボタン
+2. システムトレイの「+ 新規タスク」からクイック追加も可能
+
+### 期間で整理
+
+- **今日**: 今日やるべきタスク
+- **1週間**: 今週中に終わらせるタスク
+- **1ヶ月**: 今月中に終わらせるタスク
+
+### カレンダー連携
+
+1. ヘッダーの📅ボタンでカレンダーを開く
+2. 「Googleカレンダーに追加」で一括登録
+3. 「ICSエクスポート」でOutlook/Windowsカレンダーにインポート
+
+### AI機能
+
+1. 設定画面でAnthropic APIキーを登録
+2. タスクの✨ボタンでAIがサブタスクを提案
+
+## キーボードショートカット
+
+| キー | 機能 |
+|------|------|
+| `n` | 新規タスク入力にフォーカス |
+| `?` | ヘルプを表示 |
+| `Esc` | モーダルを閉じる |
+
+## ライセンス
 
 MIT
