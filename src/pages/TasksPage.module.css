@@ -1,0 +1,117 @@
+.container {
+  max-width: var(--main-max-width);
+}
+
+.focusMode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - var(--header-height) - var(--space-xl) * 2);
+  text-align: center;
+}
+
+.focusMode .header {
+  margin-bottom: var(--space-xl);
+}
+
+.focusMode .lists {
+  width: 100%;
+  max-width: 500px;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.loadingBar {
+  width: 120px;
+  height: 2px;
+  background: var(--surface-3);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.loadingBar::after {
+  content: '';
+  display: block;
+  width: 40%;
+  height: 100%;
+  background: var(--amber-glow);
+  animation: loading 1s ease-in-out infinite;
+}
+
+@keyframes loading {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+.header {
+  margin-bottom: var(--space-lg);
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.subtitle {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: var(--space-xs);
+  display: block;
+}
+
+.lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+  margin: 0;
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.count {
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+.hint {
+  margin-top: var(--space-xl);
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.hint kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--surface-3);
+  border-radius: var(--radius-sm);
+  margin-right: var(--space-xs);
+}

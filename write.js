@@ -1,0 +1,11 @@
+const fs = require("fs");
+const c = [];
+c.push("import { useState, useEffect } from 'react'");
+c.push("import { decomposeTask, getApiKey, setApiKey, clearApiKey, Subtask } from './lib/openai'");
+c.push("");
+c.push("interface Todo { id: string; text: string; completed: boolean; createdAt: number }");
+c.push("const STORAGE_KEY = 'calm-todo-items'");
+c.push("function loadTodos(): Todo[] { try { const saved = localStorage.getItem(STORAGE_KEY); return saved ? JSON.parse(saved) : [] } catch { return [] } }");
+c.push("function saveTodos(todos: Todo[]) { localStorage.setItem(STORAGE_KEY, JSON.stringify(todos)) }");
+fs.writeFileSync("src/App_part1.txt", c.join("\n"));
+console.log("Part 1 done");

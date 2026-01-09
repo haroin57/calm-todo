@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Calm Todo - Data Migration</title>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; background: #1a1a1a; color: #fff; }
+    h1 { color: #f59e0b; }
+    textarea { width: 100%; height: 150px; margin: 10px 0; background: #2a2a2a; color: #fff; border: 1px solid #444; padding: 10px; }
+    button { background: #f59e0b; color: #000; border: none; padding: 10px 20px; cursor: pointer; margin: 5px; font-size: 14px; }
+    button:hover { background: #fbbf24; }
+    .step { background: #2a2a2a; padding: 15px; margin: 15px 0; border-radius: 8px; }
+    code { background: #333; padding: 2px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Calm Todo データ移行</h1>
+  
+  <div class="step">
+    <h3>Step 1: 旧ポート(3002)からエクスポート</h3>
+    <p><a href="http://localhost:3002/" target="_blank">http://localhost:3002/</a> を開いて、F12 → Console で以下を実行:</p>
+    <textarea readonly>copy(JSON.stringify({todos: localStorage.getItem('calm-todo-items'), collapsed: localStorage.getItem('calm-todo-collapsed')}))</textarea>
+    <p>クリップボードにコピーされたら、下のテキストエリアに貼り付け:</p>
+    <textarea id="importData" placeholder="ここに貼り付け..."></textarea>
+  </div>
+  
+  <div class="step">
+    <h3>Step 2: 新ポート(4000)にインポート</h3>
+    <button onclick="importData()">データをインポート</button>
+    <button onclick="window.open('http://localhost:4000/', '_blank')">ポート4000を開く</button>
+  </div>
+  
+  <script>
+    function importData() {
+      try {
+        const raw = document.getElementById('importData').value;
+        const data = JSON.parse(raw);
+        if (data.todos) localStorage.setItem('calm-todo-items', data.todos);
+        if (data.collapsed) localStorage.setItem('calm-todo-collapsed', data.collapsed);
+        alert('インポート完了！ポート4000を開いてください。');
+      } catch(e) {
+        alert('エラー: ' + e.message);
+      }
+    }
+  </script>
+</body>
+</html>

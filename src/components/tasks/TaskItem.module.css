@@ -1,0 +1,134 @@
+.item {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  padding-left: calc(var(--space-lg) + 2px);
+  background: transparent;
+  border-radius: var(--radius-md);
+  transition: background var(--duration-fast) var(--ease-out-expo);
+}
+
+.item:hover {
+  background: var(--surface-2);
+}
+
+.item:hover .priorityBar {
+  opacity: 1;
+}
+
+.item:hover .actions {
+  opacity: 1;
+}
+
+.item.completed .title {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+}
+
+.item.completed .meta {
+  opacity: 0.5;
+}
+
+/* Priority indicator */
+.priorityBar {
+  position: absolute;
+  left: 0;
+  top: var(--space-sm);
+  bottom: var(--space-sm);
+  width: 2px;
+  background: var(--priority-color);
+  border-radius: var(--radius-full);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out-expo);
+}
+
+/* Checkbox */
+.checkboxWrapper {
+  position: relative;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* Content */
+.content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.title {
+  font-size: 15px;
+  color: var(--text-primary);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.meta > *:not(:last-child)::after {
+  content: '·';
+  margin-left: var(--space-sm);
+  opacity: 0.5;
+}
+
+.dueDate {
+  color: var(--text-secondary);
+}
+
+.dueDate.overdue {
+  color: var(--amber-dim);
+}
+
+.priority {
+  text-transform: lowercase;
+}
+
+.tag {
+  color: var(--text-secondary);
+}
+
+.subtaskCount {
+  color: var(--text-tertiary);
+}
+
+/* Actions */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out-expo);
+}
+
+.actionButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  transition: all var(--duration-fast) var(--ease-out-expo);
+}
+
+.actionButton:hover {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+
+.actionButton svg {
+  width: 16px;
+  height: 16px;
+}
