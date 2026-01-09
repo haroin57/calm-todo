@@ -1,6 +1,8 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
-use tauri::Manager;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::menu::{Menu, MenuItem};
 
 #[cfg(windows)]
 use tauri_winrt_notification::Toast;
@@ -167,6 +169,41 @@ fn show_notification(title: String, body: String) -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+async fn save_export_file(app: tauri::AppHandle, filename: String, content: String) -> Result<String, String> {
+    use std::fs;
+    use tauri_plugin_dialog::DialogExt;
+
+    // Get default path (Documents folder)
+    let default_path = dirs::document_dir()
+        .map(|p| p.join(&filename));
+
+    // Show save file dialog
+    let mut builder = app.dialog().file().set_file_name(&filename);
+    builder = builder.add_filter("JSON", &["json"]);
+
+    if let Some(path) = default_path {
+        builder = builder.set_directory(path.parent().unwrap_or(&path));
+    }
+
+    let file_path = builder.blocking_save_file();
+
+    match file_path {
+        Some(file_path) => {
+            // Convert FilePath to PathBuf
+            let path = file_path.into_path()
+                .map_err(|e| format!("パス変換エラー: {:?}", e))?;
+            // Write file
+            fs::write(&path, &content)
+                .map_err(|e| format!("ファイル保存エラー: {}", e))?;
+            Ok(path.to_string_lossy().to_string())
+        }
+        None => {
+            Err("キャンセルされました".to_string())
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(windows)]
@@ -177,9 +214,89 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![greet, show_notification])
-        .setup(|app| {
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // When a second instance is launched, show and focus the existing window
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        .invoke_handler(tauri::generate_handler![greet, show_notification, save_export_file])
+        .setup(|app| {
+            // Create tray menu
+            let add_item = MenuItem::with_id(app, "add", "+ 新規タスク", true, None::<&str>)?;
+            let show_item = MenuItem::with_id(app, "show", "表示", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&add_item, &show_item, &quit_item])?;
+
+            // Build tray icon
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .tooltip("Calm Todo")
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "add" => {
+                            // Check if quick-add window already exists
+                            if let Some(window) = app.get_webview_window("quick-add") {
+                                let _ = window.set_focus();
+                            } else {
+                                // Create a new small quick-add window
+                                let _ = WebviewWindowBuilder::new(
+                                    app,
+                                    "quick-add",
+                                    WebviewUrl::App("quick-add.html".into())
+                                )
+                                .title("タスク追加")
+                                .inner_size(400.0, 140.0)
+                                .resizable(false)
+                                .maximizable(false)
+                                .minimizable(false)
+                                .decorations(true)
+                                .always_on_top(true)
+                                .center()
+                                .build();
+                            }
+                        }
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            // Handle window close event - hide instead of close
+            if let Some(window) = app.get_webview_window("main") {
+                let window_clone = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window_clone.hide();
+                    }
+                });
+
                 let _ = window.open_devtools();
             }
             Ok(())

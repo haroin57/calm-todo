@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>タスク追加</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: 'Zen Maru Gothic', 'Hiragino Kaku Gothic ProN', sans-serif;
+      background: #faf9f7;
+      padding: 16px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    h1 {
+      font-size: 14px;
+      color: #5c5650;
+      font-weight: 500;
+    }
+    .input-row {
+      display: flex;
+      gap: 8px;
+    }
+    input {
+      flex: 1;
+      padding: 12px 16px;
+      font-size: 14px;
+      border: 1px solid rgba(0,0,0,0.1);
+      border-radius: 10px;
+      background: white;
+      outline: none;
+      font-family: inherit;
+    }
+    input:focus {
+      border-color: #e07b39;
+      box-shadow: 0 0 0 3px rgba(224, 123, 57, 0.08);
+    }
+    button {
+      padding: 12px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      background: #e07b39;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    button:hover {
+      background: #c96a2e;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .cancel-btn {
+      background: transparent;
+      color: #5c5650;
+      border: 1px solid rgba(0,0,0,0.1);
+    }
+    .cancel-btn:hover {
+      background: #f0f0f0;
+    }
+    .hint {
+      font-size: 11px;
+      color: #9a938a;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>クイック追加</h1>
+  <div class="input-row">
+    <input type="text" id="taskInput" placeholder="やることを入力..." autofocus>
+    <button id="addBtn" disabled>追加</button>
+  </div>
+  <p class="hint">Enter で追加 / Esc で閉じる</p>
+
+  <script type="module">
+    const STORAGE_KEY = 'calm-todo-items';
+    const input = document.getElementById('taskInput');
+    const addBtn = document.getElementById('addBtn');
+
+    input.addEventListener('input', () => {
+      addBtn.disabled = !input.value.trim();
+    });
+
+    input.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter' && input.value.trim()) {
+        await addTask();
+      }
+      if (e.key === 'Escape') {
+        await closeWindow();
+      }
+    });
+
+    addBtn.addEventListener('click', addTask);
+
+    async function addTask() {
+      const text = input.value.trim();
+      if (!text) return;
+
+      // Load existing todos
+      let todos = [];
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        todos = saved ? JSON.parse(saved) : [];
+      } catch (e) {
+        console.error(e);
+      }
+
+      // Create new todo with auto reminder based on timeframe
+      const newTodo = {
+        id: crypto.randomUUID(),
+        text: text,
+        completed: false,
+        createdAt: Date.now(),
+        parentId: null,
+        priority: 'medium',
+        group: 'default',
+        reminder: null,
+        reminderSent: false,
+        weeklyReminder: {
+          days: [new Date().getDay()],
+          time: '12:00',
+          times: ['12:00', '18:00'],
+          lastSent: null
+        },
+        followUpCount: 0,
+        lastNotifiedAt: null,
+        timeframe: 'today',
+        dueDate: null,
+        dueDateNotified: false
+      };
+
+      todos.unshift(newTodo);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+
+      // Notify main window
+      try {
+        const { emit } = await import('@tauri-apps/api/event');
+        await emit('task-added', newTodo);
+      } catch (e) {
+        console.error('Failed to emit event:', e);
+      }
+
+      await closeWindow();
+    }
+
+    async function closeWindow() {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        await win.close();
+      } catch (e) {
+        console.error('Failed to close window:', e);
+        window.close();
+      }
+    }
+  </script>
+</body>
+</html>

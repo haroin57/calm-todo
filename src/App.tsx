@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { decomposeTask, getApiKey, setApiKey, clearApiKey, Subtask } from './lib/openai'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 
 type Timeframe = 'today' | 'week' | 'month'
 
@@ -23,6 +24,8 @@ interface Todo {
   followUpCount: number  // 追い通知の回数
   lastNotifiedAt: number | null  // 最後に通知した時刻
   timeframe: Timeframe  // 期間: 今日, 1週間, 1ヶ月
+  dueDate: number | null  // 期日 (timestamp)
+  dueDateNotified: boolean  // 期日通知済みフラグ
 }
 
 const STORAGE_KEY = 'calm-todo-items'
@@ -47,7 +50,7 @@ function loadTodos(): Todo[] {
           weeklyReminder = { ...weeklyReminder, lastSent: weeklyReminder.times.reduce((acc, time) => ({ ...acc, [time]: oldLastSent }), {}) }
         }
       }
-      return { ...t, parentId: t.parentId ?? null, priority: t.priority ?? 'medium', group: t.group ?? 'default', reminder: t.reminder ?? null, reminderSent: t.reminderSent ?? false, weeklyReminder, followUpCount: t.followUpCount ?? 0, lastNotifiedAt: t.lastNotifiedAt ?? null, timeframe: t.timeframe ?? 'today' }
+      return { ...t, parentId: t.parentId ?? null, priority: t.priority ?? 'medium', group: t.group ?? 'default', reminder: t.reminder ?? null, reminderSent: t.reminderSent ?? false, weeklyReminder, followUpCount: t.followUpCount ?? 0, lastNotifiedAt: t.lastNotifiedAt ?? null, timeframe: t.timeframe ?? 'today', dueDate: t.dueDate ?? null, dueDateNotified: t.dueDateNotified ?? false }
     })
   } catch {
     return []
@@ -172,9 +175,48 @@ export default function App() {
   const [reminderType, setReminderType] = useState<'once' | 'weekly'>('once')
   const [weeklyDays, setWeeklyDays] = useState<number[]>([])
   const [weeklyTime, setWeeklyTime] = useState('09:00')
+  const [showDueDateModal, setShowDueDateModal] = useState(false)
+  const [dueDateTodoId, setDueDateTodoId] = useState<string | null>(null)
+  const [dueDateInput, setDueDateInput] = useState('')
   const [showHelp, setShowHelp] = useState(false)
   const [showIntro, setShowIntro] = useState(() => !localStorage.getItem(INTRO_SEEN_KEY))
   const [introStep, setIntroStep] = useState(0)
+  const [exportResult, setExportResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [showCalendar, setShowCalendar] = useState(false)
+  const [calendarDate, setCalendarDate] = useState(new Date())
+  const [selectedCalendarDay, setSelectedCalendarDay] = useState<Date | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const isCheckingRef = useRef(false)
+
+  // Listen for tray quick-add event
+  useEffect(() => {
+    if (!isTauri()) return
+
+    const unlisten = listen('tray-quick-add', () => {
+      // Focus the input field when tray "add" is clicked
+      setTimeout(() => {
+        inputRef.current?.focus()
+      }, 100)
+    })
+
+    return () => {
+      unlisten.then(fn => fn())
+    }
+  }, [])
+
+  // Listen for task-added event from quick-add window
+  useEffect(() => {
+    if (!isTauri()) return
+
+    const unlisten = listen('task-added', () => {
+      // Reload todos from localStorage
+      setTodos(loadTodos())
+    })
+
+    return () => {
+      unlisten.then(fn => fn())
+    }
+  }, [])
 
   // Auto-restore from backup if localStorage is empty
   useEffect(() => {
@@ -183,7 +225,7 @@ export default function App() {
       if (localTodos.length === 0) {
         const backup = await loadBackup()
         if (backup && backup.todos && backup.todos.length > 0) {
-          const migrated = backup.todos.map((t: Todo) => ({ ...t, parentId: t.parentId ?? null, priority: t.priority ?? 'medium', group: t.group ?? 'default', followUpCount: t.followUpCount ?? 0, lastNotifiedAt: t.lastNotifiedAt ?? null, timeframe: t.timeframe ?? 'today' }))
+          const migrated = backup.todos.map((t: Todo) => ({ ...t, parentId: t.parentId ?? null, priority: t.priority ?? 'medium', group: t.group ?? 'default', followUpCount: t.followUpCount ?? 0, lastNotifiedAt: t.lastNotifiedAt ?? null, timeframe: t.timeframe ?? 'today', dueDate: t.dueDate ?? null, dueDateNotified: t.dueDateNotified ?? false }))
           setTodos(migrated)
           saveTodos(migrated)
           if (backup.collapsed) {
@@ -199,6 +241,11 @@ export default function App() {
 
   useEffect(() => { saveTodos(todos); saveBackup(todos, collapsed) }, [todos])
   useEffect(() => { saveCollapsed(collapsed); saveBackup(todos, collapsed) }, [collapsed])
+
+  // Debug: log exportResult changes
+  useEffect(() => {
+    console.log('exportResult changed:', exportResult)
+  }, [exportResult])
 
   // Request notification permission on mount
   useEffect(() => {
@@ -233,76 +280,95 @@ export default function App() {
     }
 
     const checkReminders = async () => {
+      // 重複実行を防ぐ
+      if (isCheckingRef.current) return
+      isCheckingRef.current = true
+
       const now = new Date()
       const nowTime = now.getTime()
       const todayStr = now.toISOString().slice(0, 10)
       const currentDay = now.getDay()
       const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
 
-      console.log('Checking reminders at', now.toLocaleString(), 'currentTime:', currentTime)
+      // 現在のtodosを取得して、通知すべきものを特定
+      const currentTodos = loadTodos()
+      const notificationsToSend: { text: string, type: 'once' | 'weekly' | 'followup' | 'overdue', followUpCount: number }[] = []
+      const updatedTodos: Todo[] = []
 
-      const todosToNotify: { id: string, type: 'once' | 'weekly' | 'followup', followUpCount: number }[] = []
+      for (const todo of currentTodos) {
+        let updatedTodo = { ...todo }
+        let shouldNotify = false
+        let notifyType: 'once' | 'weekly' | 'followup' | 'overdue' = 'once'
+        let notifyFollowUpCount = 0
 
-      setTodos(prev => {
-        const updated = prev.map(todo => {
-          // One-time reminder check
-          if (todo.reminder && !todo.reminderSent && !todo.completed) {
-            console.log('Checking reminder for:', todo.text, 'reminder:', todo.reminder, 'now:', nowTime, 'due:', todo.reminder <= nowTime)
-            if (todo.reminder <= nowTime) {
-              console.log('Triggering one-time reminder for:', todo.text)
-              todosToNotify.push({ id: todo.id, type: 'once', followUpCount: 0 })
-              return { ...todo, reminderSent: true, followUpCount: 0, lastNotifiedAt: nowTime }
-            }
+        // 親タスクのみ通知する（子タスクは通知しない）
+        if (todo.parentId === null) {
+          // 期日超過チェック（最優先）
+          if (todo.dueDate && !todo.dueDateNotified && !todo.completed && todo.dueDate <= nowTime) {
+            shouldNotify = true
+            notifyType = 'overdue'
+            updatedTodo = { ...updatedTodo, dueDateNotified: true, followUpCount: 0, lastNotifiedAt: nowTime }
           }
-          // Weekly reminder check (multiple times support)
-          if (todo.weeklyReminder && !todo.completed) {
+          // One-time reminder check
+          else if (todo.reminder && !todo.reminderSent && !todo.completed && todo.reminder <= nowTime) {
+            shouldNotify = true
+            notifyType = 'once'
+            updatedTodo = { ...updatedTodo, reminderSent: true, followUpCount: 0, lastNotifiedAt: nowTime }
+          }
+          // Weekly reminder check
+          else if (todo.weeklyReminder && !todo.completed) {
             const { days, times, lastSent } = todo.weeklyReminder
             const lastSentMap = lastSent || {}
 
-            // 各時刻をチェック
             for (const time of (times || [])) {
               const timeLastSent = lastSentMap[time]
-              console.log('Weekly reminder check:', todo.text, 'days:', days, 'currentDay:', currentDay, 'time:', time, 'currentTime:', currentTime, 'lastSent:', timeLastSent)
-
               if (days.includes(currentDay) && currentTime >= time && timeLastSent !== todayStr) {
-                console.log('Triggering weekly reminder for:', todo.text, 'at', time)
-                todosToNotify.push({ id: todo.id, type: 'weekly', followUpCount: 0 })
-                // この時刻の lastSent を更新
+                shouldNotify = true
+                notifyType = 'weekly'
                 const newLastSent = { ...lastSentMap, [time]: todayStr }
-                return { ...todo, weeklyReminder: { ...todo.weeklyReminder, lastSent: newLastSent }, followUpCount: 0, lastNotifiedAt: nowTime }
+                updatedTodo = { ...updatedTodo, weeklyReminder: { ...todo.weeklyReminder, lastSent: newLastSent }, followUpCount: 0, lastNotifiedAt: nowTime }
+                break
               }
             }
           }
-          // 追い通知チェック - 通知済みで未完了のタスク（期間に応じた間隔）
-          const followUpInterval = getFollowUpInterval(todo.timeframe)
-          if (todo.lastNotifiedAt && !todo.completed && (nowTime - todo.lastNotifiedAt) >= followUpInterval) {
-            const newFollowUpCount = todo.followUpCount + 1
-            console.log('Triggering follow-up notification for:', todo.text, 'count:', newFollowUpCount, 'interval:', followUpInterval / (60 * 60 * 1000), 'hours')
-            todosToNotify.push({ id: todo.id, type: 'followup', followUpCount: newFollowUpCount })
-            return { ...todo, followUpCount: newFollowUpCount, lastNotifiedAt: nowTime }
-          }
-          return todo
-        })
-
-        // Send notifications after state update
-        todosToNotify.forEach(item => {
-          const todo = updated.find(t => t.id === item.id)
-          if (todo) {
-            if (item.type === 'followup') {
-              const msg = getUrgentMessage(todo.text, item.followUpCount)
-              showNotification(msg.title, msg.body)
-            } else {
-              const msg = getUrgentMessage(todo.text, 0)
-              showNotification(msg.title, msg.body)
+          // 追い通知チェック（期日超過後も含む）
+          if (!shouldNotify) {
+            const followUpInterval = getFollowUpInterval(todo.timeframe)
+            if (todo.lastNotifiedAt && !todo.completed && (nowTime - todo.lastNotifiedAt) >= followUpInterval) {
+              shouldNotify = true
+              notifyType = 'followup'
+              notifyFollowUpCount = todo.followUpCount + 1
+              updatedTodo = { ...updatedTodo, followUpCount: notifyFollowUpCount, lastNotifiedAt: nowTime }
             }
           }
-        })
+        }
 
-        return updated
+        if (shouldNotify) {
+          notificationsToSend.push({ text: todo.text, type: notifyType, followUpCount: notifyFollowUpCount })
+        }
+        updatedTodos.push(updatedTodo)
+      }
+
+      // 状態を更新
+      if (notificationsToSend.length > 0) {
+        setTodos(updatedTodos)
+        saveTodos(updatedTodos)
+      }
+
+      // 通知を送信
+      notificationsToSend.forEach(item => {
+        if (item.type === 'overdue') {
+          showNotification('⚠️ 期日超過！', `「${item.text}」の期日が過ぎています！今すぐやって！`)
+        } else {
+          const msg = getUrgentMessage(item.text, item.type === 'followup' ? item.followUpCount : 0)
+          showNotification(msg.title, msg.body)
+        }
       })
+
+      isCheckingRef.current = false
     }
     checkReminders()
-    const interval = setInterval(checkReminders, 10000) // Check every 10 seconds
+    const interval = setInterval(checkReminders, 60000) // Check every 60 seconds
     return () => clearInterval(interval)
   }, [])
 
@@ -321,7 +387,10 @@ export default function App() {
         setShowGroupModal(false)
         setShowDecomposeModal(false)
         setShowReminderModal(false)
+        setShowDueDateModal(false)
         setShowHelp(false)
+        setShowCalendar(false)
+        setSelectedCalendarDay(null)
         setEditingId(null)
       }
       if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
@@ -336,7 +405,7 @@ export default function App() {
   const restoreFromBackup = async () => {
     const backup = await loadBackup()
     if (backup && backup.todos && backup.todos.length > 0) {
-      const migrated = backup.todos.map((t: Todo) => ({ ...t, parentId: t.parentId ?? null, priority: t.priority ?? 'medium', group: t.group ?? 'default', followUpCount: t.followUpCount ?? 0, lastNotifiedAt: t.lastNotifiedAt ?? null, timeframe: t.timeframe ?? 'today' }))
+      const migrated = backup.todos.map((t: Todo) => ({ ...t, parentId: t.parentId ?? null, priority: t.priority ?? 'medium', group: t.group ?? 'default', followUpCount: t.followUpCount ?? 0, lastNotifiedAt: t.lastNotifiedAt ?? null, timeframe: t.timeframe ?? 'today', dueDate: t.dueDate ?? null, dueDateNotified: t.dueDateNotified ?? false }))
       setTodos(migrated)
       if (backup.collapsed) {
         setCollapsed(new Set(backup.collapsed))
@@ -352,7 +421,7 @@ export default function App() {
     if (!text) return
     const config = getAutoReminderConfig(currentTimeframe)
     const weeklyReminder = { days: config.days, time: config.times[0] || '12:00', times: config.times, lastSent: null }
-    setTodos(prev => [{ id: crypto.randomUUID(), text, completed: false, createdAt: Date.now(), parentId: null, priority: 'medium', group: currentGroup, reminder: null, reminderSent: false, weeklyReminder, followUpCount: 0, lastNotifiedAt: null, timeframe: currentTimeframe }, ...prev])
+    setTodos(prev => [{ id: crypto.randomUUID(), text, completed: false, createdAt: Date.now(), parentId: null, priority: 'medium', group: currentGroup, reminder: null, reminderSent: false, weeklyReminder, followUpCount: 0, lastNotifiedAt: null, timeframe: currentTimeframe, dueDate: null, dueDateNotified: false }, ...prev])
     setInput('')
   }
 
@@ -470,7 +539,7 @@ export default function App() {
     const parentGroup = decomposingTodo?.group ?? 'default'
     const parentTimeframe = decomposingTodo?.timeframe ?? 'today'
     const autoReminder = getAutoReminderConfig(parentTimeframe)
-    const newTodos: Todo[] = selected.map(st => ({ id: crypto.randomUUID(), text: st.title, completed: false, createdAt: Date.now(), parentId, priority: st.priority || 'medium', group: parentGroup, reminder: null, reminderSent: false, weeklyReminder: { days: autoReminder.days, time: autoReminder.times[0], times: autoReminder.times, lastSent: null }, followUpCount: 0, lastNotifiedAt: null, timeframe: parentTimeframe }))
+    const newTodos: Todo[] = selected.map(st => ({ id: crypto.randomUUID(), text: st.title, completed: false, createdAt: Date.now(), parentId, priority: st.priority || 'medium', group: parentGroup, reminder: null, reminderSent: false, weeklyReminder: { days: autoReminder.days, time: autoReminder.times[0], times: autoReminder.times, lastSent: null }, followUpCount: 0, lastNotifiedAt: null, timeframe: parentTimeframe, dueDate: null, dueDateNotified: false }))
     setTodos(prev => {
       const parentIndex = prev.findIndex(t => t.id === parentId)
       if (parentIndex >= 0) {
@@ -573,20 +642,45 @@ export default function App() {
     if (currentGroup === groupName) setCurrentGroup('default')
   }
 
-  const exportData = () => {
+  const exportData = async () => {
+    console.log('exportData called')
     const data = {
       todos,
       collapsed: [...collapsed],
       exportedAt: new Date().toISOString(),
       version: '2.0'
     }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `calm-todo-backup-${new Date().toISOString().slice(0, 10)}.json`
-    a.click()
-    URL.revokeObjectURL(url)
+    const content = JSON.stringify(data, null, 2)
+    const filename = `calm-todo-backup-${new Date().toISOString().slice(0, 10)}.json`
+
+    console.log('isTauri:', isTauri())
+    if (isTauri()) {
+      try {
+        console.log('Calling save_export_file...')
+        const savedPath = await invoke<string>('save_export_file', { filename, content })
+        console.log('savedPath:', savedPath)
+        setExportResult({ success: true, message: savedPath })
+        console.log('setExportResult called with success')
+      } catch (e) {
+        console.error('Export error:', e)
+        // キャンセルされた場合は何も表示しない
+        if (String(e).includes('キャンセル')) {
+          return
+        }
+        setExportResult({ success: false, message: String(e) })
+        console.log('setExportResult called with error')
+      }
+    } else {
+      const blob = new Blob([content], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+      setExportResult({ success: true, message: filename })
+      console.log('setExportResult called (browser)')
+    }
   }
 
   const importData = (file: File) => {
@@ -602,7 +696,9 @@ export default function App() {
             group: t.group ?? 'default',
             reminder: t.reminder ?? null,
             reminderSent: t.reminderSent ?? false,
-            weeklyReminder: t.weeklyReminder ?? null
+            weeklyReminder: t.weeklyReminder ?? null,
+            dueDate: t.dueDate ?? null,
+            dueDateNotified: t.dueDateNotified ?? false
           }))
           setTodos(migrated)
           if (data.collapsed) {
@@ -700,37 +796,282 @@ export default function App() {
     return `毎${daysStr} ${weekly.time}`
   }
 
+  const openDueDateModal = (todoId: string) => {
+    const todo = todos.find(t => t.id === todoId)
+    if (todo?.dueDate) {
+      const date = new Date(todo.dueDate)
+      // Format as datetime-local value (YYYY-MM-DDTHH:MM)
+      const year = date.getFullYear()
+      const month = String(date.getMonth() + 1).padStart(2, '0')
+      const day = String(date.getDate()).padStart(2, '0')
+      const hours = String(date.getHours()).padStart(2, '0')
+      const minutes = String(date.getMinutes()).padStart(2, '0')
+      setDueDateInput(`${year}-${month}-${day}T${hours}:${minutes}`)
+    } else {
+      // Default to tomorrow at 18:00
+      const tomorrow = new Date()
+      tomorrow.setDate(tomorrow.getDate() + 1)
+      tomorrow.setHours(18, 0, 0, 0)
+      const year = tomorrow.getFullYear()
+      const month = String(tomorrow.getMonth() + 1).padStart(2, '0')
+      const day = String(tomorrow.getDate()).padStart(2, '0')
+      setDueDateInput(`${year}-${month}-${day}T18:00`)
+    }
+    setDueDateTodoId(todoId)
+    setShowDueDateModal(true)
+  }
+
+  const setDueDate = () => {
+    if (!dueDateTodoId || !dueDateInput) return
+    const timestamp = new Date(dueDateInput).getTime()
+    setTodos(prev => prev.map(todo =>
+      todo.id === dueDateTodoId ? { ...todo, dueDate: timestamp, dueDateNotified: false } : todo
+    ))
+    setShowDueDateModal(false)
+    setDueDateTodoId(null)
+    setDueDateInput('')
+  }
+
+  const clearDueDate = (todoId: string) => {
+    setTodos(prev => prev.map(todo =>
+      todo.id === todoId ? { ...todo, dueDate: null, dueDateNotified: false } : todo
+    ))
+    setShowDueDateModal(false)
+    setDueDateTodoId(null)
+    setDueDateInput('')
+  }
+
+  const formatDueDate = (timestamp: number) => {
+    const date = new Date(timestamp)
+    const month = date.getMonth() + 1
+    const day = date.getDate()
+    const hours = date.getHours().toString().padStart(2, '0')
+    const minutes = date.getMinutes().toString().padStart(2, '0')
+    return `${month}/${day} ${hours}:${minutes}`
+  }
+
+  const isDueDateOverdue = (timestamp: number) => {
+    return Date.now() > timestamp
+  }
+
+  // Calendar helper functions
+  const getCalendarDays = (date: Date) => {
+    const year = date.getFullYear()
+    const month = date.getMonth()
+    const firstDay = new Date(year, month, 1)
+    const lastDay = new Date(year, month + 1, 0)
+    const startOffset = firstDay.getDay()
+    const daysInMonth = lastDay.getDate()
+
+    const days: (Date | null)[] = []
+    for (let i = 0; i < startOffset; i++) days.push(null)
+    for (let i = 1; i <= daysInMonth; i++) days.push(new Date(year, month, i))
+    return days
+  }
+
+  const getTasksForDay = (date: Date) => {
+    const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+    const dayEnd = dayStart + 24 * 60 * 60 * 1000
+    return todos.filter(t => t.dueDate && t.dueDate >= dayStart && t.dueDate < dayEnd)
+  }
+
+  const isSameDay = (d1: Date, d2: Date) => {
+    return d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate()
+  }
+
+  // Generate ICS content for a single task
+  const generateICS = (todo: Todo) => {
+    if (!todo.dueDate) return null
+    const date = new Date(todo.dueDate)
+    const formatICSDate = (d: Date) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+    const endDate = new Date(date.getTime() + 60 * 60 * 1000) // 1 hour duration
+
+    return `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Calm Todo//EN
+BEGIN:VEVENT
+UID:${todo.id}@calmtodo
+DTSTAMP:${formatICSDate(new Date())}
+DTSTART:${formatICSDate(date)}
+DTEND:${formatICSDate(endDate)}
+SUMMARY:${todo.text}
+DESCRIPTION:Calm Todoからのタスク
+STATUS:${todo.completed ? 'COMPLETED' : 'CONFIRMED'}
+END:VEVENT
+END:VCALENDAR`
+  }
+
+  // Export all tasks with due dates to ICS
+  const exportAllToICS = () => {
+    const tasksWithDueDate = todos.filter(t => t.dueDate)
+    if (tasksWithDueDate.length === 0) return
+
+    const formatICSDate = (d: Date) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+    const events = tasksWithDueDate.map(todo => {
+      const date = new Date(todo.dueDate!)
+      const endDate = new Date(date.getTime() + 60 * 60 * 1000)
+      return `BEGIN:VEVENT
+UID:${todo.id}@calmtodo
+DTSTAMP:${formatICSDate(new Date())}
+DTSTART:${formatICSDate(date)}
+DTEND:${formatICSDate(endDate)}
+SUMMARY:${todo.text}
+DESCRIPTION:Calm Todoからのタスク
+STATUS:${todo.completed ? 'COMPLETED' : 'CONFIRMED'}
+END:VEVENT`
+    }).join('\n')
+
+    const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Calm Todo//EN
+${events}
+END:VCALENDAR`
+
+    const blob = new Blob([ics], { type: 'text/calendar' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `calm-todo-${new Date().toISOString().slice(0, 10)}.ics`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // Export to ICS and open Google Calendar import page
+  const exportToGoogleCalendar = () => {
+    const tasksWithDueDate = todos.filter(t => t.dueDate)
+    if (tasksWithDueDate.length === 0) return
+
+    // If 5 or fewer tasks, open each directly in Google Calendar
+    if (tasksWithDueDate.length <= 5) {
+      tasksWithDueDate.forEach((todo, i) => {
+        const url = getGoogleCalendarURL(todo)
+        if (url) {
+          setTimeout(() => window.open(url, '_blank'), i * 300)
+        }
+      })
+      return
+    }
+
+    // For more tasks, export ICS and open Google Calendar import settings
+    exportAllToICS()
+    setTimeout(() => {
+      window.open('https://calendar.google.com/calendar/u/0/r/settings/export', '_blank')
+    }, 500)
+  }
+
+  // Download single task as ICS
+  const downloadTaskICS = (todo: Todo) => {
+    const ics = generateICS(todo)
+    if (!ics) return
+    const blob = new Blob([ics], { type: 'text/calendar' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `task-${todo.id.slice(0, 8)}.ics`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // Generate Google Calendar URL
+  const getGoogleCalendarURL = (todo: Todo) => {
+    if (!todo.dueDate) return null
+    const date = new Date(todo.dueDate)
+    const endDate = new Date(date.getTime() + 60 * 60 * 1000)
+    const formatGoogleDate = (d: Date) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+    const params = new URLSearchParams({
+      action: 'TEMPLATE',
+      text: todo.text,
+      dates: `${formatGoogleDate(date)}/${formatGoogleDate(endDate)}`,
+      details: 'Calm Todoからのタスク'
+    })
+    return `https://calendar.google.com/calendar/render?${params.toString()}`
+  }
+
   const completeIntro = () => {
     localStorage.setItem(INTRO_SEEN_KEY, 'true')
     setShowIntro(false)
     setIntroStep(0)
   }
 
+  // Highlight target element during intro
+  useEffect(() => {
+    if (!showIntro) return
+    const step = introSteps[introStep]
+
+    let el: Element | null = null
+    let btnEls: Element[] = []
+
+    if (step?.target) {
+      el = document.querySelector(step.target)
+      if (el) {
+        el.classList.add('intro-highlight')
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+
+    // Highlight specific buttons
+    if (step?.btnTarget) {
+      btnEls = Array.from(document.querySelectorAll(step.btnTarget))
+      btnEls.forEach(btn => btn.classList.add('intro-highlight-btn'))
+    }
+
+    return () => {
+      if (el) {
+        el.classList.remove('intro-highlight')
+      }
+      btnEls.forEach(btn => btn.classList.remove('intro-highlight-btn'))
+    }
+  }, [showIntro, introStep])
+
   const introSteps = [
     {
       title: 'Calm Todoへようこそ',
       content: 'シンプルで美しいタスク管理アプリです。アカウント登録不要で、データは全てローカルに保存されます。',
-      icon: '👋'
+      icon: '👋',
+      target: null,
+      btnTarget: null
     },
     {
       title: 'タスクを追加',
-      content: '上部の入力欄にタスクを入力してEnterキーまたは「追加」ボタンをクリック。nキーで素早く入力欄にフォーカスできます。',
-      icon: '✏️'
+      content: 'ここにタスクを入力してEnterキーまたは「追加」ボタンをクリック。nキーで素早くフォーカスできます。',
+      icon: '✏️',
+      target: '.input-section',
+      btnTarget: null
     },
     {
-      title: 'サブタスクとAI分解',
-      content: 'タスクの✨ボタンでAIがサブタスクを提案します（OpenAI APIキーが必要）。設定画面でAPIキーを登録してください。',
-      icon: '✨'
+      title: '期間で整理',
+      content: '「今日」「1週間」「1ヶ月」でタスクを整理。期間に応じて自動でリマインダーが設定されます。',
+      icon: '📅',
+      target: '.timeframe-tabs',
+      btnTarget: null
     },
     {
-      title: 'リマインダー',
-      content: '🔔ボタンでリマインダーを設定。1回限りの通知や、毎週特定の曜日に通知する週次リマインダーが使えます。',
-      icon: '🔔'
+      title: '期日を設定',
+      content: 'タスクの📅ボタンで期日を設定。期日を過ぎると通知でお知らせします。',
+      icon: '⏰',
+      target: '.demo-task',
+      btnTarget: '.demo-task .due-date-btn'
+    },
+    {
+      title: 'リマインダーとAI',
+      content: '🔔でリマインダー設定、✨でAIがサブタスクを提案（設定でAPIキー登録が必要）。',
+      icon: '✨',
+      target: '.demo-task',
+      btnTarget: '.demo-task .reminder-btn, .demo-task .ai-btn'
+    },
+    {
+      title: 'カレンダー連携',
+      content: 'ヘッダーの📅でカレンダー表示。ICSエクスポートでGoogleカレンダー・Outlook・Windowsカレンダーに連携できます。',
+      icon: '🗓️',
+      target: '.calendar-btn',
+      btnTarget: '.calendar-btn'
     },
     {
       title: 'さあ、始めましょう！',
-      content: 'ヘルプが必要なときは?キーまたは右上の?ボタンをクリックしてください。',
-      icon: '🚀'
+      content: 'ヘルプが必要なときは?キーまたは右上の?ボタンをクリック。タスクトレイからも操作できます。',
+      icon: '🚀',
+      target: '.help-btn',
+      btnTarget: null
     }
   ]
 
@@ -747,6 +1088,9 @@ export default function App() {
           <span className="stat completed-stat" title="今日完了">{todayCompleted} 完了</span>
         </div>
         <div className="header-buttons">
+          <button className="calendar-btn" onClick={() => setShowCalendar(true)} title="カレンダー">
+            📅 {todos.filter(t => t.dueDate).length > 0 && <span className="calendar-count">{todos.filter(t => t.dueDate).length}</span>}
+          </button>
           <button className="help-btn" onClick={() => setShowHelp(true)} title="ヘルプ (?)">?</button>
           <button className="settings-btn" onClick={() => setShowSettings(true)} title="設定">
             {hasApiKey ? '⚙ AI設定済' : '⚙ 設定'}
@@ -756,7 +1100,7 @@ export default function App() {
 
       <main className="main">
         <div className="input-section">
-          <input type="text" className="todo-input" placeholder="やることを入力..." value={input}
+          <input ref={inputRef} type="text" className="todo-input" placeholder="やることを入力..." value={input}
             onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addTodo()} />
           <button className="add-btn" onClick={addTodo} disabled={!input.trim()}>追加</button>
         </div>
@@ -777,13 +1121,13 @@ export default function App() {
         </div>
 
         <div className="timeframe-tabs">
-          <button className={'timeframe-btn ' + (currentTimeframe === 'today' ? 'active' : '')} onClick={() => setCurrentTimeframe('today')}>
+          <button className={'timeframe-btn ' + (currentTimeframe === 'today' ? 'active' : '')} data-timeframe="today" onClick={() => setCurrentTimeframe('today')}>
             今日 ({todos.filter(t => t.group === currentGroup && t.timeframe === 'today' && t.parentId === null).length})
           </button>
-          <button className={'timeframe-btn ' + (currentTimeframe === 'week' ? 'active' : '')} onClick={() => setCurrentTimeframe('week')}>
+          <button className={'timeframe-btn ' + (currentTimeframe === 'week' ? 'active' : '')} data-timeframe="week" onClick={() => setCurrentTimeframe('week')}>
             1週間 ({todos.filter(t => t.group === currentGroup && t.timeframe === 'week' && t.parentId === null).length})
           </button>
-          <button className={'timeframe-btn ' + (currentTimeframe === 'month' ? 'active' : '')} onClick={() => setCurrentTimeframe('month')}>
+          <button className={'timeframe-btn ' + (currentTimeframe === 'month' ? 'active' : '')} data-timeframe="month" onClick={() => setCurrentTimeframe('month')}>
             1ヶ月 ({todos.filter(t => t.group === currentGroup && t.timeframe === 'month' && t.parentId === null).length})
           </button>
         </div>
@@ -797,7 +1141,21 @@ export default function App() {
         {decomposeError && <div className="error-message">{decomposeError}</div>}
 
         <ul className="todo-list">
-          {filteredTodos.filter(t => t.group === currentGroup).length === 0 ? (
+          {/* Demo task for intro */}
+          {showIntro && (
+            <li className="todo-item demo-task">
+              <button className="checkbox"></button>
+              <button className="priority-badge priority-medium">中</button>
+              <button className="timeframe-badge timeframe-today">今日</button>
+              <button className="due-date-btn">📅</button>
+              <span className="todo-text">買い物に行く</span>
+              <button className="edit-btn">✎</button>
+              <button className="reminder-btn">🔔</button>
+              <button className="ai-btn">✨</button>
+              <button className="delete-btn">×</button>
+            </li>
+          )}
+          {filteredTodos.filter(t => t.group === currentGroup).length === 0 && !showIntro ? (
             <li className="empty-state">
               <div className="empty-icon">{filter === 'completed' ? '✓' : '○'}</div>
               <div className="empty-title">
@@ -822,6 +1180,11 @@ export default function App() {
                 <button className={'priority-badge priority-' + todo.priority} onClick={() => cyclePriority(todo.id)} title="優先度を変更">{priorityLabel(todo.priority)}</button>
                 {todo.parentId === null && (
                   <button className={'timeframe-badge timeframe-' + todo.timeframe} onClick={() => cycleTimeframe(todo.id)} title="期間を変更">{timeframeLabel(todo.timeframe)}</button>
+                )}
+                {todo.parentId === null && (
+                  <button className={'due-date-btn' + (todo.dueDate ? (isDueDateOverdue(todo.dueDate) && !todo.completed ? ' overdue' : ' has-due-date') : '')} onClick={() => openDueDateModal(todo.id)} title={todo.dueDate ? `期日: ${formatDueDate(todo.dueDate)}` : '期日を設定'}>
+                    📅{todo.dueDate && <span className="due-date-text">{formatDueDate(todo.dueDate)}</span>}
+                  </button>
                 )}
                 {editingId === todo.id ? (
                   <input type="text" className="edit-input" value={editText} onChange={e => setEditText(e.target.value)}
@@ -985,6 +1348,28 @@ export default function App() {
         </div>
       )}
 
+      {showDueDateModal && dueDateTodoId && (
+        <div className="modal-overlay" onClick={() => setShowDueDateModal(false)}>
+          <div className="modal due-date-modal" onClick={e => e.stopPropagation()}>
+            <h2>期日設定</h2>
+            <p className="modal-description">タスクの期日を設定します。期日を過ぎても完了していない場合は通知でお知らせします。</p>
+            <input
+              type="datetime-local"
+              className="due-date-input"
+              value={dueDateInput}
+              onChange={e => setDueDateInput(e.target.value)}
+            />
+            <div className="modal-actions">
+              {todos.find(t => t.id === dueDateTodoId)?.dueDate && (
+                <button className="modal-btn danger" onClick={() => clearDueDate(dueDateTodoId)}>削除</button>
+              )}
+              <button className="modal-btn secondary" onClick={() => setShowDueDateModal(false)}>キャンセル</button>
+              <button className="modal-btn primary" onClick={setDueDate} disabled={!dueDateInput}>設定</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showHelp && (
         <div className="modal-overlay" onClick={() => setShowHelp(false)}>
           <div className="modal help-modal" onClick={e => e.stopPropagation()}>
@@ -1040,28 +1425,115 @@ export default function App() {
         </div>
       )}
 
+      {showCalendar && (
+        <div className="modal-overlay" onClick={() => { setShowCalendar(false); setSelectedCalendarDay(null) }}>
+          <div className="modal calendar-modal" onClick={e => e.stopPropagation()}>
+            <h2>📅 カレンダー</h2>
+            <div className="calendar-header">
+              <button className="calendar-nav-btn" onClick={() => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1))}>◀</button>
+              <span className="calendar-month">{calendarDate.getFullYear()}年{calendarDate.getMonth() + 1}月</span>
+              <button className="calendar-nav-btn" onClick={() => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1))}>▶</button>
+            </div>
+            <div className="calendar-weekdays">
+              {['日', '月', '火', '水', '木', '金', '土'].map(d => <span key={d} className="calendar-weekday">{d}</span>)}
+            </div>
+            <div className="calendar-grid">
+              {getCalendarDays(calendarDate).map((day, i) => {
+                if (!day) return <span key={i} className="calendar-day empty" />
+                const tasks = getTasksForDay(day)
+                const isToday = isSameDay(day, new Date())
+                const isSelected = selectedCalendarDay && isSameDay(day, selectedCalendarDay)
+                const hasOverdue = tasks.some(t => !t.completed && t.dueDate && t.dueDate < Date.now())
+                return (
+                  <button
+                    key={i}
+                    className={'calendar-day' + (isToday ? ' today' : '') + (isSelected ? ' selected' : '') + (tasks.length > 0 ? ' has-tasks' : '') + (hasOverdue ? ' has-overdue' : '')}
+                    onClick={() => setSelectedCalendarDay(day)}
+                  >
+                    {day.getDate()}
+                    {tasks.length > 0 && <span className="calendar-dot" />}
+                  </button>
+                )
+              })}
+            </div>
+            {selectedCalendarDay && (
+              <div className="calendar-day-tasks">
+                <h3>{selectedCalendarDay.getMonth() + 1}/{selectedCalendarDay.getDate()}のタスク</h3>
+                {getTasksForDay(selectedCalendarDay).length === 0 ? (
+                  <p className="no-tasks">この日のタスクはありません</p>
+                ) : (
+                  <ul className="calendar-task-list">
+                    {getTasksForDay(selectedCalendarDay).map(todo => (
+                      <li key={todo.id} className={'calendar-task-item' + (todo.completed ? ' completed' : '') + (todo.dueDate && todo.dueDate < Date.now() && !todo.completed ? ' overdue' : '')}>
+                        <span className="calendar-task-time">{new Date(todo.dueDate!).getHours().toString().padStart(2, '0')}:{new Date(todo.dueDate!).getMinutes().toString().padStart(2, '0')}</span>
+                        <span className="calendar-task-text">{todo.text}</span>
+                        <div className="calendar-task-actions">
+                          <button className="calendar-export-btn" onClick={() => downloadTaskICS(todo)} title="ICSダウンロード">📥</button>
+                          <a href={getGoogleCalendarURL(todo) || '#'} target="_blank" rel="noopener noreferrer" className="calendar-export-btn" title="Googleカレンダーに追加">G</a>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            <div className="calendar-footer">
+              <button className="modal-btn secondary" onClick={exportAllToICS} disabled={todos.filter(t => t.dueDate).length === 0}>
+                📥 ICSエクスポート
+              </button>
+              <button className="modal-btn google-calendar" onClick={exportToGoogleCalendar} disabled={todos.filter(t => t.dueDate).length === 0}>
+                📆 Googleカレンダーに追加
+              </button>
+              <button className="modal-btn primary" onClick={() => { setShowCalendar(false); setSelectedCalendarDay(null) }}>閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showIntro && (
-        <div className="modal-overlay intro-overlay">
-          <div className="modal intro-modal">
-            <div className="intro-icon">{introSteps[introStep].icon}</div>
-            <h2>{introSteps[introStep].title}</h2>
-            <p className="intro-content">{introSteps[introStep].content}</p>
+        <div className="intro-tooltip">
+          <div className="intro-tooltip-content">
+            <span className="intro-tooltip-icon">{introSteps[introStep].icon}</span>
+            <div className="intro-tooltip-text">
+              <strong>{introSteps[introStep].title}</strong>
+              <span>{introSteps[introStep].content}</span>
+            </div>
+          </div>
+          <div className="intro-tooltip-nav">
             <div className="intro-dots">
               {introSteps.map((_, i) => (
                 <span key={i} className={'intro-dot' + (i === introStep ? ' active' : '')} onClick={() => setIntroStep(i)} />
               ))}
             </div>
-            <div className="modal-actions intro-actions">
+            <div className="intro-tooltip-buttons">
               {introStep > 0 && (
-                <button className="modal-btn secondary" onClick={() => setIntroStep(s => s - 1)}>戻る</button>
+                <button className="intro-nav-btn" onClick={() => setIntroStep(s => s - 1)}>←</button>
               )}
               {introStep < introSteps.length - 1 ? (
-                <button className="modal-btn primary" onClick={() => setIntroStep(s => s + 1)}>次へ</button>
+                <button className="intro-nav-btn primary" onClick={() => setIntroStep(s => s + 1)}>次へ →</button>
               ) : (
-                <button className="modal-btn primary" onClick={completeIntro}>始める</button>
+                <button className="intro-nav-btn primary" onClick={completeIntro}>始める</button>
               )}
+              <button className="intro-skip-btn" onClick={completeIntro}>×</button>
             </div>
-            <button className="intro-skip" onClick={completeIntro}>スキップ</button>
+          </div>
+        </div>
+      )}
+
+      {exportResult && (
+        <div className="modal-overlay export-result-overlay" style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setExportResult(null)}>
+          <div className="modal export-result-modal" style={{ background: 'white', padding: '24px', borderRadius: '12px', maxWidth: '400px', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+            <div className="export-result-icon" style={{ width: '64px', height: '64px', margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px', background: exportResult.success ? 'rgba(74, 156, 109, 0.12)' : 'rgba(217, 79, 79, 0.12)', color: exportResult.success ? '#4a9c6d' : '#d94f4f', borderRadius: '50%' }}>{exportResult.success ? '✓' : '✕'}</div>
+            <h2 style={{ marginBottom: '12px' }}>{exportResult.success ? 'エクスポート完了' : 'エクスポート失敗'}</h2>
+            <p style={{ fontSize: '14px', color: '#666', marginBottom: '4px' }}>
+              {exportResult.success
+                ? `ファイルを保存しました:`
+                : 'エラーが発生しました:'}
+            </p>
+            <p style={{ fontFamily: 'monospace', fontSize: '12px', background: '#f5f5f5', padding: '8px 12px', borderRadius: '8px', wordBreak: 'break-all', marginBottom: '16px' }}>{exportResult.message}</p>
+            <div className="modal-actions">
+              <button className="modal-btn primary" onClick={() => setExportResult(null)}>閉じる</button>
+            </div>
           </div>
         </div>
       )}
