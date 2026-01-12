@@ -5,8 +5,10 @@
   gap: var(--space-md);
   padding: var(--space-md) var(--space-lg);
   padding-left: calc(var(--space-lg) + 2px);
+  padding-right: calc(var(--space-lg) + 48px);
   background: transparent;
   border-radius: var(--radius-md);
+  overflow: hidden;
   transition: background var(--duration-fast) var(--ease-out-expo);
 }
 
@@ -105,27 +107,53 @@
 
 /* Actions */
 .actions {
+  position: absolute;
+  top: 50%;
+  right: var(--space-lg);
+  transform: translateY(-50%);
   display: flex;
   align-items: center;
   gap: var(--space-xs);
+  padding: 2px 4px;
   opacity: 0;
-  transition: opacity var(--duration-fast) var(--ease-out-expo);
+  visibility: hidden;
+  pointer-events: none;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+  transition:
+    opacity var(--duration-fast) var(--ease-out-expo),
+    visibility var(--duration-fast) var(--ease-out-expo),
+    transform var(--duration-fast) var(--ease-out-expo);
+  z-index: 2;
+}
+
+.item:hover .actions {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(-50%) translateX(4px);
 }
 
 .actionButton {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
   color: var(--text-tertiary);
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.6);
   transition: all var(--duration-fast) var(--ease-out-expo);
 }
 
 .actionButton:hover {
   background: var(--surface-3);
   color: var(--text-primary);
+  border-color: rgba(0, 0, 0, 0.08);
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.12);
+  transform: translateY(-1px);
 }
 
 .actionButton svg {

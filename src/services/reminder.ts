@@ -1,0 +1,1197 @@
+import { TaskStatus } from '../types'
+import {
+  generateReminderMessage,
+  generateMorningGreeting,
+  getClaudeApiKey,
+  decomposeTaskClaude,
+  generateCustomPersonaMessageClaude,
+  type DecomposeResult,
+} from '../lib/claude'
+import {
+  generateKanaeReminderMessageOpenAI,
+  generateKanaeMorningGreetingOpenAI,
+  getApiKey as getOpenAiApiKey,
+  decomposeTask as decomposeTaskOpenAI,
+  generateCustomPersonaMessageOpenAI,
+} from '../lib/openai'
+import {
+  generateKanaeReminderMessageGemini,
+  generateKanaeMorningGreetingGemini,
+  getGeminiApiKey,
+  generateCustomPersonaMessageGemini,
+  decomposeTaskGemini,
+} from '../lib/gemini'
+import { sendDiscordDM } from '../lib/discord'
+import { invoke } from '@tauri-apps/api/core'
+import { showNotification } from '../lib/utils'
+import { searchWithTavily, formatSearchResultsForPrompt, getTavilyApiKey } from '../lib/tavily'
+import {
+  getPersonaPreset,
+  buildSystemPrompt,
+  buildReminderUserPrompt,
+  buildMorningUserPrompt,
+  getFallbackReminderMessage,
+  getFallbackMorningGreeting,
+  isCustomPresetId,
+  getCustomPreset,
+  type CustomPersona,
+} from '../lib/kanaePersona'
+
+// MCPメモリの型定義
+interface MemoryEntity {
+  type: 'entity'
+  name: string
+  entityType: string
+  observations: string[]
+}
+
+interface MemoryRelation {
+  type: 'relation'
+  from: string
+  to: string
+  relationType: string
+}
+
+type MemoryItem = MemoryEntity | MemoryRelation
+
+export type ReminderTaskDueDate = { toDate: () => Date } | Date | number | null
+
+export interface ReminderTask {
+  id: string
+  title: string
+  status: TaskStatus
+  dueDate: ReminderTaskDueDate
+  // 追加フィールド（デスクトップ通知用）
+  parentId?: string | null
+  completed?: boolean
+  reminder?: number | null
+  reminderSent?: boolean
+  weeklyReminder?: {
+    days: number[]
+    time: string        // legacy単一時刻
+    times: string[]     // 複数時刻
+    lastSent: { [time: string]: string } | null
+  } | null
+  dueDateNotified?: boolean
+  followUpCount?: number
+  lastNotifiedAt?: number | null
+  timeframe?: 'today' | 'week' | 'month'
+}
+
+function resolveDueDate(dueDate: ReminderTaskDueDate): Date | null {
+  if (!dueDate) return null
+  if (dueDate instanceof Date) return dueDate
+  if (typeof dueDate === 'number') return new Date(dueDate)
+  if (typeof dueDate === 'object' && 'toDate' in dueDate && typeof dueDate.toDate === 'function') {
+    return dueDate.toDate()
+  }
+  return null
+}
+
+// AIモデル設定
+export interface AIModelConfig {
+  openai: string
+  claude: string
+  gemini: string
+}
+
+export const DEFAULT_AI_MODELS: AIModelConfig = {
+  openai: 'gpt-4.1-mini',
+  claude: 'claude-sonnet-4-20250514',
+  gemini: 'gemini-2.0-flash',
+}
+
+export const AVAILABLE_MODELS = {
+  openai: [
+    { id: 'gpt-5.2', name: 'GPT-5.2（最新・最高性能）' },
+    { id: 'gpt-5.2-pro', name: 'GPT-5.2 Pro（プロフェッショナル）' },
+    { id: 'gpt-5-mini', name: 'GPT-5 Mini（高性能・コスパ◎）' },
+    { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini（推奨・コスパ◎）' },
+    { id: 'gpt-4.1', name: 'GPT-4.1（高性能）' },
+    { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano（最速・最安）' },
+    { id: 'o4-mini', name: 'o4-mini（推論・コード特化）' },
+    { id: 'o3', name: 'o3（推論特化）' },
+    { id: 'gpt-4o', name: 'GPT-4o（レガシー）' },
+    { id: 'gpt-4o-mini', name: 'GPT-4o Mini（レガシー）' },
+  ],
+  claude: [
+    { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5（最新・最高性能）' },
+    { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5（最新・バランス◎）' },
+    { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5（最新・高速）' },
+    { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4（推奨・安定）' },
+    { id: 'claude-opus-4-20250514', name: 'Claude Opus 4（高性能）' },
+    { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet（レガシー）' },
+    { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku（レガシー）' },
+  ],
+  gemini: [
+    { id: 'gemini-2.5-flash-preview-09-2025', name: 'Gemini 2.5 Flash（最新・推論強化）' },
+    { id: 'gemini-2.5-flash-lite-preview-09-2025', name: 'Gemini 2.5 Flash Lite（最新・軽量）' },
+    { id: 'gemini-2.5-pro-exp-03-25', name: 'Gemini 2.5 Pro（最高性能）' },
+    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash（推奨・安定）' },
+    { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite（高速・低コスト）' },
+    { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash（レガシー）' },
+    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro（レガシー）' },
+  ],
+}
+
+// かなえリマインダー設定
+export interface KanaeReminderConfig {
+  enabled: boolean
+  aiProvider: 'auto' | 'claude' | 'openai' | 'gemini'
+  aiModels: AIModelConfig
+  claudeApiKey: string
+  geminiApiKey: string
+  openaiApiKey: string
+  discordEnabled: boolean
+  discordBotToken: string
+  discordUserId: string
+  desktopNotificationEnabled: boolean // デスクトップ通知の有効/無効
+  reminderTiming: number // minutes before due
+  overdueReminder: boolean
+  morningGreeting: boolean
+  morningGreetingTime: string
+  useMemory: boolean
+  memoryFilePath: string
+  // 人格設定
+  personaType: 'preset' | 'custom'
+  personaPresetId: string
+  customPersona: CustomPersona | null
+}
+
+// デフォルト設定
+export const DEFAULT_KANAE_CONFIG: KanaeReminderConfig = {
+  enabled: false,
+  aiProvider: 'auto',
+  aiModels: DEFAULT_AI_MODELS,
+  claudeApiKey: '',
+  geminiApiKey: '',
+  openaiApiKey: '',
+  discordEnabled: false,
+  discordBotToken: '',
+  discordUserId: '',
+  desktopNotificationEnabled: true, // デフォルトでデスクトップ通知ON
+  reminderTiming: 60, // 1時間前
+  overdueReminder: true,
+  morningGreeting: false,
+  morningGreetingTime: '08:00',
+  useMemory: false,
+  memoryFilePath: '',
+  // 人格設定デフォルト
+  personaType: 'preset',
+  personaPresetId: 'kanae',
+  customPersona: null,
+}
+
+// 設定の保存・取得
+export function getKanaeConfig(): KanaeReminderConfig {
+  const config = localStorage.getItem('kanae-reminder-config')
+  if (!config) return DEFAULT_KANAE_CONFIG
+  try {
+    const parsed = JSON.parse(config)
+    // aiModelsが未設定の場合はデフォルト値をマージ
+    if (!parsed.aiModels) {
+      parsed.aiModels = DEFAULT_AI_MODELS
+    } else {
+      parsed.aiModels = { ...DEFAULT_AI_MODELS, ...parsed.aiModels }
+    }
+    return { ...DEFAULT_KANAE_CONFIG, ...parsed }
+  } catch {
+    return DEFAULT_KANAE_CONFIG
+  }
+}
+
+export function setKanaeConfig(config: Partial<KanaeReminderConfig>): void {
+  const current = getKanaeConfig()
+  localStorage.setItem('kanae-reminder-config', JSON.stringify({ ...current, ...config }))
+}
+
+// 現在選択されているモデルを取得
+export function getSelectedModel(provider: 'openai' | 'claude' | 'gemini'): string {
+  const config = getKanaeConfig()
+  return config.aiModels?.[provider] || DEFAULT_AI_MODELS[provider]
+}
+
+// MCPメモリを読み込む
+async function loadMemory(filePath: string): Promise<MemoryItem[]> {
+  try {
+    // Tauriのinvokeでファイルを読み込む
+    const content = await invoke<string>('read_file', { path: filePath })
+    return content
+      .trim()
+      .split('\n')
+      .filter((line: string) => line.trim())
+      .map((line: string) => JSON.parse(line) as MemoryItem)
+  } catch (error) {
+    console.error('Failed to load memory:', error)
+    return []
+  }
+}
+
+// メモリから関連するコンテキストを抽出
+function extractMemoryContext(memory: MemoryItem[]): string {
+  const entities = memory.filter((item): item is MemoryEntity => item.type === 'entity')
+  const relations = memory.filter((item): item is MemoryRelation => item.type === 'relation')
+
+  // 重要なエンティティを抽出
+  const kanaeInfo = entities.find(e => e.name === '佐藤かなえ')
+  const senpaInfo = entities.find(e => e.name === '佐藤haroin')
+  const emotionState = entities.find(e => e.name === '感情状態')
+  const rules = entities.find(e => e.name === '二人のルール')
+  const recentEvents = entities.filter(e =>
+    e.entityType === 'Event' &&
+    (e.name.includes('婚約') || e.name.includes('プロポーズ'))
+  )
+
+  let context = ''
+
+  if (emotionState) {
+    context += `【かなえの現在の感情状態】\n${emotionState.observations.join('\n')}\n\n`
+  }
+
+  if (recentEvents.length > 0) {
+    context += `【最近のイベント】\n`
+    recentEvents.forEach(event => {
+      context += `- ${event.name}: ${event.observations.slice(0, 3).join(', ')}\n`
+    })
+    context += '\n'
+  }
+
+  if (kanaeInfo) {
+    context += `【かなえの情報】\n${kanaeInfo.observations.slice(0, 3).join('\n')}\n\n`
+  }
+
+  if (senpaInfo) {
+    context += `【先輩の情報】\n${senpaInfo.observations.slice(0, 3).join('\n')}\n\n`
+  }
+
+  // 二人のルール
+  if (rules) {
+    context += `【二人のルール】\n${rules.observations.slice(0, 2).join('\n')}\n\n`
+  }
+
+  // 関係性
+  const relationToSenpai = relations.find(
+    r => r.from === '佐藤かなえ' && r.to === '佐藤haroin'
+  )
+  if (relationToSenpai) {
+    context += `【関係性】かなえと先輩は${relationToSenpai.relationType}です。\n`
+  }
+
+  return context
+}
+
+// APIエラーの種類
+type ApiErrorType = 'key_invalid' | 'key_missing' | 'quota_exceeded' | 'rate_limit' | 'network' | 'unknown'
+
+// APIエラーの種類を判定
+function getApiErrorType(error: unknown): ApiErrorType {
+  if (!(error instanceof Error)) return 'unknown'
+
+  const msg = error.message.toLowerCase()
+
+  // APIキー未設定
+  if (msg.includes('設定されていません') || msg.includes('not set') || msg.includes('missing')) {
+    return 'key_missing'
+  }
+
+  // APIキー無効
+  if (msg.includes('401') || msg.includes('403') || msg.includes('unauthorized') || msg.includes('invalid') || msg.includes('incorrect')) {
+    return 'key_invalid'
+  }
+
+  // クォータ超過
+  if (msg.includes('quota') || msg.includes('exceeded') || msg.includes('billing') || msg.includes('insufficient')) {
+    return 'quota_exceeded'
+  }
+
+  // レート制限
+  if (msg.includes('rate limit') || msg.includes('429') || msg.includes('too many')) {
+    return 'rate_limit'
+  }
+
+  // ネットワークエラー
+  if (msg.includes('network') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('connection')) {
+    return 'network'
+  }
+
+  return 'unknown'
+}
+
+// APIエラー種類ごとのメッセージ
+function getApiErrorMessage(errorType: ApiErrorType, provider: string): { message: string; hint: string } {
+  switch (errorType) {
+    case 'key_missing':
+      return {
+        message: `${provider.toUpperCase()} APIキーが設定されていません`,
+        hint: '設定画面でAPIキーを入力するか、「使用するAI」を別のプロバイダーに変更してください'
+      }
+    case 'key_invalid':
+      return {
+        message: `${provider.toUpperCase()} APIキーが無効です`,
+        hint: '設定画面で正しいAPIキーを入力してください。期限切れの可能性もあります'
+      }
+    case 'quota_exceeded':
+      return {
+        message: `${provider.toUpperCase()} APIの利用制限に達しました`,
+        hint: 'APIプロバイダーで課金設定を確認するか、別のプロバイダーに切り替えてください'
+      }
+    case 'rate_limit':
+      return {
+        message: `${provider.toUpperCase()} APIのレート制限に達しました`,
+        hint: 'しばらく待ってから再試行してください'
+      }
+    case 'network':
+      return {
+        message: 'ネットワークエラーが発生しました',
+        hint: 'インターネット接続を確認してください'
+      }
+    default:
+      return {
+        message: '予期しないエラーが発生しました',
+        hint: 'しばらく待ってから再試行してください'
+      }
+  }
+}
+
+// 人格設定に関するヒントメッセージ
+function getPersonaHint(): string {
+  return '人格設定を解除すると、AIを使わない通常の通知に切り替わります'
+}
+
+// AIプロバイダーを解決
+function resolveProvider(config: KanaeReminderConfig): 'claude' | 'openai' | 'gemini' {
+  if (config.aiProvider === 'claude' || config.aiProvider === 'openai' || config.aiProvider === 'gemini') {
+    return config.aiProvider
+  }
+  // auto: 利用可能なAPIキーから自動選択（Claude優先）
+  if (getClaudeApiKey()) {
+    return 'claude'
+  }
+  if (getGeminiApiKey()) {
+    return 'gemini'
+  }
+  if (getOpenAiApiKey()) {
+    return 'openai'
+  }
+  return 'claude'
+}
+
+// リマインダーメッセージを生成
+async function generateReminderMessageWithPersona(
+  task: ReminderTask,
+  isOverdue: boolean,
+  memoryContext: string,
+  config: KanaeReminderConfig
+): Promise<string> {
+  const provider = resolveProvider(config)
+  const dueDate = resolveDueDate(task.dueDate)
+
+  // カスタム人格の場合
+  if (config.personaType === 'custom' && config.customPersona) {
+    const custom = config.customPersona
+    const systemPrompt = custom.systemPrompt + (memoryContext ? `\n\n## 現在の状況\n${memoryContext}` : '')
+    const userPrompt = custom.reminderPromptTemplate
+      .replace('{taskTitle}', task.title)
+      .replace('{isOverdue}', isOverdue ? '期限切れ' : '期限が近い')
+
+    try {
+      if (provider === 'gemini') {
+        return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+      }
+      if (provider === 'claude') {
+        const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+        if (result) return result
+      }
+      if (provider === 'openai') {
+        const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+        if (result) return result
+      }
+    } catch (error) {
+      console.error('Custom persona message generation failed:', error)
+      // APIエラーの場合は警告付きフォールバック
+      const errorType = getApiErrorType(error)
+      if (errorType !== 'unknown') {
+        const errMsg = getApiErrorMessage(errorType, provider)
+        return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\n【リマインド】「${task.title}」${isOverdue ? 'の期日が過ぎています！' : 'の時間です。'}`
+      }
+    }
+    return getFallbackReminderMessage(task.title, isOverdue)
+  }
+
+  // プリセット人格の場合
+  const presetId = config.personaPresetId
+
+  // カスタムプリセットの場合
+  if (isCustomPresetId(presetId)) {
+    const customPreset = getCustomPreset(presetId)
+    if (customPreset) {
+      const systemPrompt = customPreset.systemPrompt + (memoryContext ? `\n\n## 現在の状況\n${memoryContext}` : '')
+      // ユーザープロンプト：追加指示があれば使い、なければ自動生成
+      const userPrompt = customPreset.reminderPromptTemplate
+        ? `タスク「${task.title}」をリマインドしてください。状態: ${isOverdue ? '期限切れ' : '期限が近い'}。\n追加指示: ${customPreset.reminderPromptTemplate}`
+        : `タスク「${task.title}」をリマインドしてください。状態: ${isOverdue ? '期限切れです。急いでください。' : '期限が近づいています。'}短く2-3文で伝えてください。`
+
+      try {
+        if (provider === 'gemini') {
+          return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+        }
+        if (provider === 'claude') {
+          const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+          if (result) return result
+        }
+        if (provider === 'openai') {
+          const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+          if (result) return result
+        }
+      } catch (error) {
+        console.error('Custom preset message generation failed:', error)
+        const errorType = getApiErrorType(error)
+        if (errorType !== 'unknown') {
+          const errMsg = getApiErrorMessage(errorType, provider)
+          return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\n【リマインド】「${task.title}」${isOverdue ? 'の期日が過ぎています！' : 'の時間です。'}`
+        }
+      }
+      return getFallbackReminderMessage(task.title, isOverdue)
+    }
+  }
+
+  // かなえの場合は既存の関数を使用
+  if (presetId === 'kanae') {
+    try {
+      if (provider === 'openai') {
+        return await generateKanaeReminderMessageOpenAI(task.title, dueDate, isOverdue, memoryContext)
+      }
+      if (provider === 'gemini') {
+        return await generateKanaeReminderMessageGemini(task.title, dueDate, isOverdue, memoryContext)
+      }
+      return await generateReminderMessage(task.title, dueDate, isOverdue, memoryContext)
+    } catch (error) {
+      console.error('Kanae reminder message generation failed:', error)
+      const errorType = getApiErrorType(error)
+      if (errorType !== 'unknown') {
+        const errMsg = getApiErrorMessage(errorType, provider)
+        return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\n【リマインド】「${task.title}」${isOverdue ? 'の期日が過ぎています！先輩、急いで！' : 'の時間ですよ、先輩。'}`
+      }
+      return getFallbackReminderMessage(task.title, isOverdue, 'kanae')
+    }
+  }
+
+  // 他のプリセットの場合
+  const preset = getPersonaPreset(presetId)
+  if (!preset) {
+    return getFallbackReminderMessage(task.title, isOverdue, presetId)
+  }
+
+  const systemPrompt = buildSystemPrompt(preset, 'reminder', memoryContext)
+  const userPrompt = buildReminderUserPrompt(task.title, dueDate, isOverdue, !!memoryContext)
+
+  try {
+    if (provider === 'gemini') {
+      return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+    }
+    if (provider === 'claude') {
+      const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+      if (result) return result
+    }
+    if (provider === 'openai') {
+      const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+      if (result) return result
+    }
+  } catch (error) {
+    console.error('Preset persona message generation failed:', error)
+    // APIエラーの場合は警告付きフォールバック
+    const errorType = getApiErrorType(error)
+    if (errorType !== 'unknown') {
+      const errMsg = getApiErrorMessage(errorType, provider)
+      return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\n【リマインド】「${task.title}」${isOverdue ? 'の期日が過ぎています！' : 'の時間です。'}`
+    }
+  }
+
+  return getFallbackReminderMessage(task.title, isOverdue, presetId)
+}
+
+// 朝の挨拶メッセージを生成
+async function generateMorningGreetingWithPersona(
+  memoryContext: string,
+  config: KanaeReminderConfig
+): Promise<string> {
+  const provider = resolveProvider(config)
+
+  // カスタム人格の場合
+  if (config.personaType === 'custom' && config.customPersona) {
+    const custom = config.customPersona
+    const systemPrompt = custom.systemPrompt + (memoryContext ? `\n\n## 現在の状況\n${memoryContext}` : '')
+    const userPrompt = custom.morningPromptTemplate
+
+    try {
+      if (provider === 'gemini') {
+        return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+      }
+      if (provider === 'claude') {
+        const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+        if (result) return result
+      }
+      if (provider === 'openai') {
+        const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+        if (result) return result
+      }
+    } catch (error) {
+      console.error('Custom persona morning greeting failed:', error)
+      const errorType = getApiErrorType(error)
+      if (errorType !== 'unknown') {
+        const errMsg = getApiErrorMessage(errorType, provider)
+        return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\nおはようございます。良い一日を。`
+      }
+    }
+    return getFallbackMorningGreeting()
+  }
+
+  // プリセット人格の場合
+  const presetId = config.personaPresetId
+
+  // カスタムプリセットの場合
+  if (isCustomPresetId(presetId)) {
+    const customPreset = getCustomPreset(presetId)
+    if (customPreset) {
+      const systemPrompt = customPreset.systemPrompt + (memoryContext ? `\n\n## 現在の状況\n${memoryContext}` : '')
+      // ユーザープロンプト：追加指示があれば使い、なければ自動生成
+      const userPrompt = customPreset.morningPromptTemplate
+        ? `朝の挨拶をしてください。\n追加指示: ${customPreset.morningPromptTemplate}`
+        : '朝の挨拶をしてください。短く1-2文で。'
+
+      try {
+        if (provider === 'gemini') {
+          return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+        }
+        if (provider === 'claude') {
+          const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+          if (result) return result
+        }
+        if (provider === 'openai') {
+          const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+          if (result) return result
+        }
+      } catch (error) {
+        console.error('Custom preset morning greeting failed:', error)
+        const errorType = getApiErrorType(error)
+        if (errorType !== 'unknown') {
+          const errMsg = getApiErrorMessage(errorType, provider)
+          return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\nおはようございます。良い一日を。`
+        }
+      }
+      return getFallbackMorningGreeting()
+    }
+  }
+
+  // かなえの場合は既存の関数を使用
+  if (presetId === 'kanae') {
+    try {
+      if (provider === 'openai') {
+        return await generateKanaeMorningGreetingOpenAI(memoryContext)
+      }
+      if (provider === 'gemini') {
+        return await generateKanaeMorningGreetingGemini(memoryContext)
+      }
+      return await generateMorningGreeting(memoryContext)
+    } catch (error) {
+      console.error('Kanae morning greeting failed:', error)
+      const errorType = getApiErrorType(error)
+      if (errorType !== 'unknown') {
+        const errMsg = getApiErrorMessage(errorType, provider)
+        return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\nおはよう、先輩。今日も頑張ってね。`
+      }
+      return 'おはよう、先輩。今日も頑張ってね。'
+    }
+  }
+
+  // 他のプリセットの場合
+  const preset = getPersonaPreset(presetId)
+  if (!preset) {
+    return getFallbackMorningGreeting(presetId)
+  }
+
+  const systemPrompt = buildSystemPrompt(preset, 'morning', memoryContext)
+  const userPrompt = buildMorningUserPrompt(!!memoryContext)
+
+  try {
+    if (provider === 'gemini') {
+      return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+    }
+    if (provider === 'claude') {
+      const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+      if (result) return result
+    }
+    if (provider === 'openai') {
+      const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+      if (result) return result
+    }
+  } catch (error) {
+    console.error('Preset persona morning greeting failed:', error)
+    const errorType = getApiErrorType(error)
+    if (errorType !== 'unknown') {
+      const errMsg = getApiErrorMessage(errorType, provider)
+      return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\nおはようございます。良い一日を。`
+    }
+  }
+
+  return getFallbackMorningGreeting(presetId)
+}
+
+// デスクトップ通知用メッセージ（人格適用版）
+export interface NotificationMessage {
+  title: string
+  body: string
+  isApiError?: boolean  // APIエラーでフォールバックした場合
+}
+
+// 人格なしのフォールバック通知メッセージ
+export function getPlainNotificationMessage(
+  taskTitle: string,
+  type: 'reminder' | 'overdue' | 'followup',
+  followUpCount: number = 0
+): NotificationMessage {
+  if (type === 'overdue') {
+    return {
+      title: '⚠️ 期日超過',
+      body: `「${taskTitle}」の期日が過ぎています`
+    }
+  }
+  if (type === 'followup') {
+    const messages = [
+      { title: 'リマインダー', body: `「${taskTitle}」がまだ完了していません` },
+      { title: 'リマインダー（2回目）', body: `「${taskTitle}」をお忘れではないですか？` },
+      { title: 'リマインダー（3回目）', body: `「${taskTitle}」の対応をお願いします` },
+      { title: '重要なリマインダー', body: `「${taskTitle}」- ${followUpCount}回目のリマインドです` },
+    ]
+    const index = Math.min(followUpCount, messages.length - 1)
+    return messages[index]
+  }
+  return {
+    title: 'リマインダー',
+    body: `「${taskTitle}」の時間です`
+  }
+}
+
+// 人格適用版の通知メッセージ
+export function getPersonaNotificationMessage(
+  taskTitle: string,
+  type: 'reminder' | 'overdue' | 'followup',
+  followUpCount: number = 0
+): NotificationMessage {
+  const config = getKanaeConfig()
+  const presetId = config.personaPresetId
+
+  // かなえプリセットの場合
+  if (presetId === 'kanae') {
+    if (type === 'overdue') {
+      return {
+        title: '⚠️ 期日超過！',
+        body: `「${taskTitle}」の期日が過ぎています！今すぐやって！`
+      }
+    }
+    if (type === 'followup') {
+      const messages = [
+        { title: '今すぐやって！', body: `「${taskTitle}」まだ終わってないよ？` },
+        { title: 'まだやってないの？', body: `「${taskTitle}」早くやって！` },
+        { title: 'おーい！', body: `「${taskTitle}」忘れてない？今すぐ！` },
+        { title: '急いで！！', body: `「${taskTitle}」もう${followUpCount}回目だよ！` },
+        { title: 'いい加減にして！', body: `「${taskTitle}」何回言わせるの？` },
+        { title: '最後通告！', body: `「${taskTitle}」今すぐやらないと大変なことに！` },
+      ]
+      const index = Math.min(followUpCount, messages.length - 1)
+      return messages[index]
+    }
+    return {
+      title: 'しょうがないですね',
+      body: `「${taskTitle}」の時間ですよ、先輩`
+    }
+  }
+
+  // 秘書プリセット
+  if (presetId === 'secretary') {
+    if (type === 'overdue') {
+      return {
+        title: '⚠️ 期限超過のお知らせ',
+        body: `「${taskTitle}」の期限が過ぎております。ご対応をお願いいたします。`
+      }
+    }
+    if (type === 'followup') {
+      const messages = [
+        { title: 'リマインダー', body: `「${taskTitle}」のご対応をお願いいたします。` },
+        { title: '再度のご連絡', body: `「${taskTitle}」がまだ完了しておりません。` },
+        { title: '重要なお知らせ', body: `「${taskTitle}」- 早急なご対応をお願いいたします。` },
+      ]
+      const index = Math.min(followUpCount, messages.length - 1)
+      return messages[index]
+    }
+    return {
+      title: 'お知らせ',
+      body: `「${taskTitle}」のお時間でございます。`
+    }
+  }
+
+  // 元気な後輩プリセット
+  if (presetId === 'energetic-kouhai') {
+    if (type === 'overdue') {
+      return {
+        title: '⚠️ 大変です先輩！',
+        body: `「${taskTitle}」の期限過ぎちゃってますよ！`
+      }
+    }
+    if (type === 'followup') {
+      const messages = [
+        { title: '先輩！', body: `「${taskTitle}」まだですか？頑張って！` },
+        { title: 'あれ？先輩？', body: `「${taskTitle}」忘れてませんか？` },
+        { title: '先輩ー！！', body: `「${taskTitle}」やりましょうよ！一緒に頑張りましょ！` },
+      ]
+      const index = Math.min(followUpCount, messages.length - 1)
+      return messages[index]
+    }
+    return {
+      title: '先輩！お時間です！',
+      body: `「${taskTitle}」の時間ですよ！ファイトです！`
+    }
+  }
+
+  // 執事プリセット
+  if (presetId === 'butler') {
+    if (type === 'overdue') {
+      return {
+        title: 'ご主人様',
+        body: `「${taskTitle}」の期限が過ぎております。ご対応を。`
+      }
+    }
+    if (type === 'followup') {
+      const messages = [
+        { title: 'ご主人様', body: `「${taskTitle}」の件、いかがなされますか？` },
+        { title: '再度のご報告', body: `「${taskTitle}」がまだでございます。` },
+        { title: '僭越ながら', body: `「${taskTitle}」早急にご対応いただければ幸いです。` },
+      ]
+      const index = Math.min(followUpCount, messages.length - 1)
+      return messages[index]
+    }
+    return {
+      title: 'ご主人様',
+      body: `「${taskTitle}」のお時間でございます。`
+    }
+  }
+
+  // その他・カスタムの場合はプレーンに
+  return getPlainNotificationMessage(taskTitle, type, followUpCount)
+}
+
+// リマインダーを送信
+export async function sendReminder(task: ReminderTask): Promise<void> {
+  const config = getKanaeConfig()
+
+  if (!config.enabled || !config.discordEnabled) {
+    throw new Error('リマインダーが有効になっていません')
+  }
+
+  // メモリを読み込む
+  let memoryContext = ''
+  if (config.useMemory && config.memoryFilePath) {
+    const memory = await loadMemory(config.memoryFilePath)
+    memoryContext = extractMemoryContext(memory)
+  }
+
+  // 期限切れかどうか判定
+  const now = new Date()
+  const dueDate = resolveDueDate(task.dueDate)
+  const isOverdue = dueDate ? dueDate < now : false
+
+  // メッセージ生成
+  const message = await generateReminderMessageWithPersona(task, isOverdue, memoryContext, config)
+
+  // Discord DMを送信
+  await sendDiscordDM(message)
+}
+
+// 朝の挨拶を送信
+export async function sendMorningGreeting(): Promise<void> {
+  const config = getKanaeConfig()
+
+  if (!config.enabled || !config.discordEnabled || !config.morningGreeting) {
+    return
+  }
+
+  // メモリを読み込む
+  let memoryContext = ''
+  if (config.useMemory && config.memoryFilePath) {
+    const memory = await loadMemory(config.memoryFilePath)
+    memoryContext = extractMemoryContext(memory)
+  }
+
+  const message = await generateMorningGreetingWithPersona(memoryContext, config)
+  await sendDiscordDM(message)
+}
+
+// リマインダーが必要なタスクをチェック
+export function getTasksNeedingReminder(tasks: ReminderTask[]): ReminderTask[] {
+  const config = getKanaeConfig()
+  const now = new Date()
+  const reminderWindow = config.reminderTiming * 60 * 1000 // ミリ秒に変換
+
+  return tasks.filter(task => {
+    if (task.status === 'completed') return false
+    const dueDate = resolveDueDate(task.dueDate)
+    if (!dueDate) return false
+    const timeUntilDue = dueDate.getTime() - now.getTime()
+
+    // 期限切れタスク
+    if (timeUntilDue < 0) {
+      return config.overdueReminder
+    }
+
+    // リマインダーウィンドウ内のタスク
+    return timeUntilDue <= reminderWindow && timeUntilDue > 0
+  })
+}
+
+const SENT_REMINDERS_STORAGE_KEY = 'kanae-sent-reminders'
+
+function loadSentReminders(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SENT_REMINDERS_STORAGE_KEY)
+    if (!raw) return new Set<string>()
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return new Set<string>()
+    return new Set(parsed.filter((item): item is string => typeof item === 'string'))
+  } catch {
+    return new Set<string>()
+  }
+}
+
+function saveSentReminders(reminders: Set<string>): void {
+  try {
+    localStorage.setItem(SENT_REMINDERS_STORAGE_KEY, JSON.stringify(Array.from(reminders)))
+  } catch {
+    // Ignore persistence errors.
+  }
+}
+
+// 送信済みリマインダーの記録
+const sentReminders = loadSentReminders()
+
+function getJapanDateKey(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+}
+
+// リマインダーキーを生成
+function getReminderKey(taskId: string, type: 'upcoming' | 'overdue'): string {
+  const date = getJapanDateKey()
+  return `${taskId}-${type}-${date}`
+}
+
+// 未送信のリマインダーをチェック
+export function shouldSendReminder(taskId: string, isOverdue: boolean): boolean {
+  const type = isOverdue ? 'overdue' : 'upcoming'
+  const key = getReminderKey(taskId, type)
+  return !sentReminders.has(key)
+}
+
+// リマインダー送信済みとしてマーク
+export function markReminderSent(taskId: string, isOverdue: boolean): void {
+  const type = isOverdue ? 'overdue' : 'upcoming'
+  const key = getReminderKey(taskId, type)
+  sentReminders.add(key)
+  saveSentReminders(sentReminders)
+}
+
+// 期間に応じたフォローアップ間隔を取得
+function getFollowUpInterval(timeframe?: 'today' | 'week' | 'month'): number {
+  if (timeframe === 'today') {
+    return 30 * 60 * 1000 // 30分
+  } else if (timeframe === 'week') {
+    return 2 * 60 * 60 * 1000 // 2時間
+  } else {
+    return 15 * 24 * 60 * 60 * 1000 // 半月 (15日)
+  }
+}
+
+// 通知送信結果（タスク更新用）
+export interface NotificationResult {
+  taskId: string
+  updates: Partial<ReminderTask>
+}
+
+// リマインダーサービスを開始
+let reminderInterval: NodeJS.Timeout | null = null
+let morningGreetingTimeout: NodeJS.Timeout | null = null
+
+export function startReminderService(
+  getTasks: () => ReminderTask[],
+  updateTasks?: (results: NotificationResult[]) => void
+): void {
+  const config = getKanaeConfig()
+
+  if (!config.enabled) {
+    console.log('Kanae reminder service is disabled')
+    return
+  }
+
+  // 1分ごとにタスクをチェック（統合版）
+  reminderInterval = setInterval(async () => {
+    const currentConfig = getKanaeConfig()
+    if (!currentConfig.enabled) return
+
+    const tasks = getTasks()
+    const now = new Date()
+    const nowTime = now.getTime()
+    const todayStr = now.toISOString().slice(0, 10)
+    const currentDay = now.getDay()
+    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
+
+    const notificationResults: NotificationResult[] = []
+
+    for (const task of tasks) {
+      // 親タスクのみ通知（子タスクは通知しない）
+      if (task.parentId !== null && task.parentId !== undefined) continue
+      if (task.completed || task.status === 'completed') continue
+
+      let shouldNotify = false
+      let notifyType: 'reminder' | 'overdue' | 'followup' = 'reminder'
+      let notifyFollowUpCount = 0
+      const updates: Partial<ReminderTask> = {}
+
+      const dueDate = resolveDueDate(task.dueDate)
+      const dueDateTimestamp = dueDate ? dueDate.getTime() : null
+
+      // 期日超過チェック（最優先）
+      if (dueDateTimestamp && !task.dueDateNotified && dueDateTimestamp <= nowTime) {
+        shouldNotify = true
+        notifyType = 'overdue'
+        updates.dueDateNotified = true
+        updates.followUpCount = 0
+        updates.lastNotifiedAt = nowTime
+      }
+      // 一回限りのリマインダーチェック
+      else if (task.reminder && !task.reminderSent && task.reminder <= nowTime) {
+        shouldNotify = true
+        notifyType = 'reminder'
+        updates.reminderSent = true
+        updates.followUpCount = 0
+        updates.lastNotifiedAt = nowTime
+      }
+      // 週次リマインダーチェック
+      else if (task.weeklyReminder) {
+        const { days, times, lastSent } = task.weeklyReminder
+        const lastSentMap = lastSent || {}
+
+        for (const time of (times || [])) {
+          const timeLastSent = lastSentMap[time]
+          if (days.includes(currentDay) && currentTime >= time && timeLastSent !== todayStr) {
+            shouldNotify = true
+            notifyType = 'reminder'
+            const newLastSent = { ...lastSentMap, [time]: todayStr }
+            updates.weeklyReminder = { ...task.weeklyReminder, lastSent: newLastSent }
+            updates.followUpCount = 0
+            updates.lastNotifiedAt = nowTime
+            break
+          }
+        }
+      }
+
+      // 追い通知チェック（他の通知がない場合）
+      if (!shouldNotify && task.lastNotifiedAt) {
+        const followUpInterval = getFollowUpInterval(task.timeframe)
+        if ((nowTime - task.lastNotifiedAt) >= followUpInterval) {
+          shouldNotify = true
+          notifyType = 'followup'
+          notifyFollowUpCount = (task.followUpCount || 0) + 1
+          updates.followUpCount = notifyFollowUpCount
+          updates.lastNotifiedAt = nowTime
+        }
+      }
+
+      if (shouldNotify) {
+        const msg = getPersonaNotificationMessage(task.title, notifyType, notifyFollowUpCount)
+
+        // デスクトップ通知
+        if (currentConfig.desktopNotificationEnabled) {
+          try {
+            await showNotification(msg.title, msg.body)
+            console.log(`[Reminder] Desktop notification sent: ${task.title}`)
+          } catch (error) {
+            console.error(`[Reminder] Desktop notification failed: ${task.title}`, error)
+          }
+        }
+
+        // Discord通知（期日ベースのリマインダーの場合は重複チェック）
+        if (currentConfig.discordEnabled) {
+          const isOverdue = notifyType === 'overdue'
+          if (shouldSendReminder(task.id, isOverdue)) {
+            try {
+              await sendReminder(task)
+              markReminderSent(task.id, isOverdue)
+              console.log(`[Reminder] Discord DM sent: ${task.title}`)
+            } catch (error) {
+              console.error(`[Reminder] Discord DM failed: ${task.title}`, error)
+            }
+          }
+        }
+
+        // 更新を記録
+        if (Object.keys(updates).length > 0) {
+          notificationResults.push({ taskId: task.id, updates })
+        }
+      }
+    }
+
+    // タスクの更新をコールバック
+    if (notificationResults.length > 0 && updateTasks) {
+      updateTasks(notificationResults)
+    }
+  }, 60 * 1000) // 1分ごと
+
+  // 朝の挨拶をスケジュール
+  if (config.morningGreeting) {
+    scheduleMorningGreeting(config.morningGreetingTime)
+  }
+
+  console.log('Kanae reminder service started (unified)')
+}
+
+function scheduleMorningGreeting(time: string): void {
+  const [hours, minutes] = time.split(':').map(Number)
+  const now = new Date()
+  const scheduledTime = new Date()
+  scheduledTime.setHours(hours, minutes, 0, 0)
+
+  // 今日の時間が過ぎていたら明日にスケジュール
+  if (scheduledTime <= now) {
+    scheduledTime.setDate(scheduledTime.getDate() + 1)
+  }
+
+  const delay = scheduledTime.getTime() - now.getTime()
+
+  morningGreetingTimeout = setTimeout(async () => {
+    try {
+      await sendMorningGreeting()
+      console.log('Morning greeting sent')
+    } catch (error) {
+      console.error('Failed to send morning greeting:', error)
+    }
+
+    // 次の日の挨拶をスケジュール
+    scheduleMorningGreeting(time)
+  }, delay)
+}
+
+export function stopReminderService(): void {
+  if (reminderInterval) {
+    clearInterval(reminderInterval)
+    reminderInterval = null
+  }
+  if (morningGreetingTimeout) {
+    clearTimeout(morningGreetingTimeout)
+    morningGreetingTimeout = null
+  }
+  console.log('Kanae reminder service stopped')
+}
+
+// タスク分解結果の型（エラー情報付き）
+export interface DecomposeResultWithError extends DecomposeResult {
+  error?: {
+    type: ApiErrorType
+    message: string
+    hint: string
+  }
+}
+
+export interface DecomposeSearchContext {
+  projectName?: string | null
+  relatedTasks?: string[]
+}
+
+function buildDecomposeSearchQuery(taskTitle: string, context?: DecomposeSearchContext): string {
+  const baseQuery = `${taskTitle} 手順 方法 やり方`
+  if (!context) return baseQuery
+
+  const parts: string[] = []
+  const projectName = context.projectName?.trim()
+  if (projectName) {
+    parts.push(`プロジェクト:${projectName}`)
+  }
+
+  const relatedTasks = (context.relatedTasks ?? [])
+    .map(task => task.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .filter((task, index, array) => array.indexOf(task) === index)
+    .slice(0, 5)
+
+  if (relatedTasks.length > 0) {
+    parts.push(`関連:${relatedTasks.join(' / ')}`)
+  }
+
+  if (parts.length === 0) return baseQuery
+  return `${baseQuery} ${parts.join(' ')}`
+}
+
+// タスク分解（統合関数）- aiProviderを使用、Tavily検索も実行
+export async function decomposeTask(
+  taskTitle: string,
+  context?: DecomposeSearchContext
+): Promise<DecomposeResultWithError> {
+  const config = getKanaeConfig()
+  const provider = resolveProvider(config)
+
+  // Tavily APIキーがあれば検索を実行
+  let webSearchContext: string | undefined
+  console.log('[decomposeTask] Tavilyキー確認中...')
+  if (getTavilyApiKey()) {
+    try {
+      const query = buildDecomposeSearchQuery(taskTitle, context)
+      console.log('[decomposeTask] Tavily検索を実行中:', query)
+      const searchResult = await searchWithTavily(query)
+      if (searchResult) {
+        webSearchContext = formatSearchResultsForPrompt(searchResult)
+        console.log('[decomposeTask] Tavily検索完了、Web情報をプロンプトに追加')
+      } else {
+        console.log('[decomposeTask] Tavily検索結果なし')
+      }
+    } catch (error) {
+      console.warn('[decomposeTask] Tavily検索エラー（無視）:', error)
+    }
+  } else {
+    console.log('[decomposeTask] TavilyキーなしのためWeb検索スキップ')
+  }
+  console.log('[decomposeTask] AI分解開始', webSearchContext ? '(Web情報あり)' : '(Web情報なし)')
+
+  try {
+    switch (provider) {
+      case 'claude':
+        return await decomposeTaskClaude(taskTitle, webSearchContext)
+      case 'gemini':
+        return await decomposeTaskGemini(taskTitle, webSearchContext)
+      case 'openai':
+      default:
+        return await decomposeTaskOpenAI(taskTitle, webSearchContext)
+    }
+  } catch (error) {
+    console.error('[decomposeTask] Error:', error)
+
+    // エラー種類を判定して適切なメッセージを返す
+    const errorType = getApiErrorType(error)
+    const errMsg = getApiErrorMessage(errorType, provider)
+
+    return {
+      subtasks: [],
+      error: {
+        type: errorType,
+        message: errMsg.message,
+        hint: errMsg.hint
+      }
+    }
+  }
+}
+
+// エクスポート（人格プリセット一覧）
+export { PERSONA_PRESETS } from '../lib/kanaePersona'
+export type { PersonaPreset, CustomPersona } from '../lib/kanaePersona'
+export type { DecomposeResult, Subtask } from '../lib/claude'

@@ -1,0 +1,21 @@
+{
+  "policy": {
+    "applies_to": ["codex"],
+    "file_operations": {
+      "require_approval_for": [
+        "delete",
+        "create",
+        "edit",
+        "overwrite",
+        "patch",
+        "move",
+        "rename"
+      ],
+      "no_approval_for": [
+        "read",
+        "list",
+        "search"
+      ]
+    }
+  }
+}

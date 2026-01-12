@@ -64,8 +64,11 @@ function backupPlugin(): Plugin {
 }
 
 // https://vite.dev/config/
+const isDev = process.env.NODE_ENV !== 'production'
+
 export default defineConfig({
   plugins: [react(), backupPlugin()],
+  base: isDev ? '/' : './',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -76,6 +79,11 @@ export default defineConfig({
     strictPort: true,
     headers: {
       'Cache-Control': 'no-store',
+    },
+    hmr: {
+      protocol: 'ws',
+      host: 'localhost',
+      port: 4000,
     },
   },
   optimizeDeps: {
