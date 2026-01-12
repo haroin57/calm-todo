@@ -8,6 +8,17 @@ export interface DiscordSettings {
   enabled: boolean
 }
 
+export interface DiscordEmbed {
+  title?: string
+  description?: string
+  color?: number
+  fields?: { name: string; value: string; inline?: boolean }[]
+  footer?: { text: string; icon_url?: string }
+  timestamp?: string
+  thumbnail?: { url: string }
+  author?: { name: string; icon_url?: string; url?: string }
+}
+
 export function getDiscordSettings(): DiscordSettings | null {
   const settings = localStorage.getItem('discord-settings')
   console.log('[Discord] getDiscordSettings:', settings ? 'found' : 'not found')
@@ -75,8 +86,13 @@ async function createDMChannel(botToken: string, userId: string): Promise<string
   }
 }
 
-// DMを送信
-export async function sendDiscordDM(message: string): Promise<void> {
+// DMを送信（Embed形式）
+export async function sendDiscordDM(message: string, options?: {
+  taskTitle?: string
+  dueDate?: Date | null
+  isOverdue?: boolean
+  type?: 'reminder' | 'morning' | 'dueDate'
+}): Promise<void> {
   console.log('[Discord] sendDiscordDM called')
   const settings = getDiscordSettings()
 
@@ -96,7 +112,39 @@ export async function sendDiscordDM(message: string): Promise<void> {
     console.log('[Discord] sendDiscordDM - creating DM channel...')
     const channelId = await createDMChannel(botToken, userId)
 
-    console.log('[Discord] sendDiscordDM - sending message to channel:', channelId)
+    // Embed作成
+    const embed: DiscordEmbed = {
+      description: message,
+      color: options?.isOverdue ? 0xED4245 : options?.type === 'morning' ? 0x57F287 : 0x5865F2, // 赤、緑、青
+      timestamp: new Date().toISOString(),
+      footer: { text: 'Calm Todo' },
+    }
+
+    // タイトル設定
+    if (options?.type === 'morning') {
+      embed.title = '🌅 おはようございます'
+    } else if (options?.type === 'dueDate') {
+      embed.title = options?.isOverdue ? '⚠️ 期限切れタスク' : '📅 期日のお知らせ'
+    } else if (options?.type === 'reminder') {
+      embed.title = options?.isOverdue ? '⏰ リマインダー（期限切れ）' : '⏰ リマインダー'
+    }
+
+    // タスク情報をフィールドに追加
+    if (options?.taskTitle) {
+      embed.fields = embed.fields || []
+      embed.fields.push({ name: 'タスク', value: options.taskTitle, inline: true })
+      if (options.dueDate) {
+        const dateStr = options.dueDate.toLocaleString('ja-JP', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+        embed.fields.push({ name: '期日', value: dateStr, inline: true })
+      }
+    }
+
+    console.log('[Discord] sendDiscordDM - sending embed to channel:', channelId)
     const response = await fetch(`${DISCORD_API_URL}/channels/${channelId}/messages`, {
       method: 'POST',
       headers: {
@@ -104,7 +152,7 @@ export async function sendDiscordDM(message: string): Promise<void> {
         Authorization: `Bot ${botToken}`,
       },
       body: JSON.stringify({
-        content: message,
+        embeds: [embed],
       }),
     })
 
@@ -131,7 +179,7 @@ export async function sendDiscordDM(message: string): Promise<void> {
   }
 }
 
-// テストメッセージ送信
+// テストメッセージ送信（Embed形式）
 export async function sendTestDiscordDM(): Promise<void> {
   console.log('[Discord] sendTestDiscordDM called')
   const settings = getDiscordSettings()
@@ -146,6 +194,17 @@ export async function sendTestDiscordDM(): Promise<void> {
     const channelId = await createDMChannel(botToken, userId)
     console.log('[Discord] sendTestDiscordDM - sending to channel:', channelId)
 
+    const embed: DiscordEmbed = {
+      title: '✅ 接続テスト成功',
+      description: '先輩、テスト送信ですよ。ちゃんと届いてますか？',
+      color: 0x57F287, // 緑
+      timestamp: new Date().toISOString(),
+      footer: { text: 'Calm Todo' },
+      fields: [
+        { name: 'ステータス', value: '正常に接続されています', inline: true },
+      ]
+    }
+
     const response = await fetch(`${DISCORD_API_URL}/channels/${channelId}/messages`, {
       method: 'POST',
       headers: {
@@ -153,7 +212,7 @@ export async function sendTestDiscordDM(): Promise<void> {
         Authorization: `Bot ${botToken}`,
       },
       body: JSON.stringify({
-        content: '先輩、テスト送信ですよ。ちゃんと届いてますか？',
+        embeds: [embed],
       }),
     })
 

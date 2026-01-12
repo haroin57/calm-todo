@@ -1,4 +1,3 @@
-import { TaskStatus } from '../types'
 import {
   generateReminderMessage,
   generateMorningGreeting,
@@ -55,6 +54,7 @@ interface MemoryRelation {
 type MemoryItem = MemoryEntity | MemoryRelation
 
 export type ReminderTaskDueDate = { toDate: () => Date } | Date | number | null
+export type TaskStatus = 'pending' | 'completed' | 'archived'
 
 export interface ReminderTask {
   id: string
@@ -134,6 +134,25 @@ export const AVAILABLE_MODELS = {
   ],
 }
 
+// 通知タイミング設定
+export interface NotificationTimingConfig {
+  // 通知を許可する時間帯
+  quietHoursEnabled: boolean
+  quietHoursStart: string  // "HH:MM" 形式
+  quietHoursEnd: string    // "HH:MM" 形式
+  // 通知を許可する曜日 (0=日, 1=月, ..., 6=土)
+  allowedDays: number[]
+  // フォローアップ通知（追い通知）
+  followUpEnabled: boolean
+  followUpIntervalMinutes: number  // フォローアップ間隔（分）
+  followUpMaxCount: number         // 最大フォローアップ回数
+  // 1日の通知回数制限
+  dailyLimitEnabled: boolean
+  dailyLimitCount: number
+  // 通知間隔（同じタスクの連続通知を防ぐ）
+  minIntervalMinutes: number
+}
+
 // かなえリマインダー設定
 export interface KanaeReminderConfig {
   enabled: boolean
@@ -156,6 +175,22 @@ export interface KanaeReminderConfig {
   personaType: 'preset' | 'custom'
   personaPresetId: string
   customPersona: CustomPersona | null
+  // 通知タイミング詳細設定
+  notificationTiming: NotificationTimingConfig
+}
+
+// デフォルト通知タイミング設定
+export const DEFAULT_NOTIFICATION_TIMING: NotificationTimingConfig = {
+  quietHoursEnabled: true,
+  quietHoursStart: '23:00',
+  quietHoursEnd: '07:00',
+  allowedDays: [0, 1, 2, 3, 4, 5, 6], // 全曜日
+  followUpEnabled: true,
+  followUpIntervalMinutes: 30,
+  followUpMaxCount: 3,
+  dailyLimitEnabled: false,
+  dailyLimitCount: 10,
+  minIntervalMinutes: 5,
 }
 
 // デフォルト設定
@@ -180,6 +215,8 @@ export const DEFAULT_KANAE_CONFIG: KanaeReminderConfig = {
   personaType: 'preset',
   personaPresetId: 'kanae',
   customPersona: null,
+  // 通知タイミングデフォルト
+  notificationTiming: DEFAULT_NOTIFICATION_TIMING,
 }
 
 // 設定の保存・取得
@@ -193,6 +230,12 @@ export function getKanaeConfig(): KanaeReminderConfig {
       parsed.aiModels = DEFAULT_AI_MODELS
     } else {
       parsed.aiModels = { ...DEFAULT_AI_MODELS, ...parsed.aiModels }
+    }
+    // notificationTimingが未設定の場合はデフォルト値をマージ
+    if (!parsed.notificationTiming) {
+      parsed.notificationTiming = DEFAULT_NOTIFICATION_TIMING
+    } else {
+      parsed.notificationTiming = { ...DEFAULT_NOTIFICATION_TIMING, ...parsed.notificationTiming }
     }
     return { ...DEFAULT_KANAE_CONFIG, ...parsed }
   } catch {
@@ -803,8 +846,13 @@ export async function sendReminder(task: ReminderTask): Promise<void> {
   // メッセージ生成
   const message = await generateReminderMessageWithPersona(task, isOverdue, memoryContext, config)
 
-  // Discord DMを送信
-  await sendDiscordDM(message)
+  // Discord DMを送信（Embed形式）
+  await sendDiscordDM(message, {
+    taskTitle: task.title,
+    dueDate: dueDate,
+    isOverdue,
+    type: 'reminder'
+  })
 }
 
 // 朝の挨拶を送信
@@ -823,7 +871,7 @@ export async function sendMorningGreeting(): Promise<void> {
   }
 
   const message = await generateMorningGreetingWithPersona(memoryContext, config)
-  await sendDiscordDM(message)
+  await sendDiscordDM(message, { type: 'morning' })
 }
 
 // リマインダーが必要なタスクをチェック
@@ -883,28 +931,84 @@ function getJapanDateKey(): string {
 }
 
 // リマインダーキーを生成
-function getReminderKey(taskId: string, type: 'upcoming' | 'overdue'): string {
+function getReminderKey(taskId: string, type: 'upcoming' | 'overdue', channel: 'discord' | 'desktop' = 'discord'): string {
   const date = getJapanDateKey()
-  return `${taskId}-${type}-${date}`
+  return `${taskId}-${type}-${channel}-${date}`
 }
 
 // 未送信のリマインダーをチェック
-export function shouldSendReminder(taskId: string, isOverdue: boolean): boolean {
+export function shouldSendReminder(taskId: string, isOverdue: boolean, channel: 'discord' | 'desktop' = 'discord'): boolean {
   const type = isOverdue ? 'overdue' : 'upcoming'
-  const key = getReminderKey(taskId, type)
+  const key = getReminderKey(taskId, type, channel)
   return !sentReminders.has(key)
 }
 
 // リマインダー送信済みとしてマーク
-export function markReminderSent(taskId: string, isOverdue: boolean): void {
+export function markReminderSent(taskId: string, isOverdue: boolean, channel: 'discord' | 'desktop' = 'discord'): void {
   const type = isOverdue ? 'overdue' : 'upcoming'
-  const key = getReminderKey(taskId, type)
+  const key = getReminderKey(taskId, type, channel)
   sentReminders.add(key)
   saveSentReminders(sentReminders)
 }
 
-// 期間に応じたフォローアップ間隔を取得
-function getFollowUpInterval(timeframe?: 'today' | 'week' | 'month'): number {
+// 現在時刻が通知許可時間帯かチェック
+function isWithinAllowedTime(config: NotificationTimingConfig): boolean {
+  const now = new Date()
+  const currentDay = now.getDay()
+
+  // 曜日チェック
+  if (!config.allowedDays.includes(currentDay)) {
+    return false
+  }
+
+  // おやすみモードチェック
+  if (config.quietHoursEnabled) {
+    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
+    const start = config.quietHoursStart
+    const end = config.quietHoursEnd
+
+    // 深夜をまたぐ場合（例: 23:00 - 07:00）
+    if (start > end) {
+      if (currentTime >= start || currentTime < end) {
+        return false // おやすみ時間帯
+      }
+    } else {
+      // 日中の場合（例: 12:00 - 14:00）
+      if (currentTime >= start && currentTime < end) {
+        return false // おやすみ時間帯
+      }
+    }
+  }
+
+  return true
+}
+
+// フォローアップ通知が許可されているかチェック
+function canSendFollowUp(config: NotificationTimingConfig, currentCount: number): boolean {
+  if (!config.followUpEnabled) {
+    return false
+  }
+  if (currentCount >= config.followUpMaxCount) {
+    return false
+  }
+  return true
+}
+
+// 最小通知間隔が経過しているかチェック
+function hasMinIntervalPassed(lastNotifiedAt: number | null | undefined, config: NotificationTimingConfig): boolean {
+  if (!lastNotifiedAt) return true
+  const now = Date.now()
+  const minIntervalMs = config.minIntervalMinutes * 60 * 1000
+  return (now - lastNotifiedAt) >= minIntervalMs
+}
+
+// 期間に応じたフォローアップ間隔を取得（設定値を優先）
+function getFollowUpInterval(timeframe?: 'today' | 'week' | 'month', config?: NotificationTimingConfig): number {
+  // 設定値がある場合はそれを使用
+  if (config?.followUpIntervalMinutes) {
+    return config.followUpIntervalMinutes * 60 * 1000
+  }
+  // レガシー: timeframeベースの間隔
   if (timeframe === 'today') {
     return 30 * 60 * 1000 // 30分
   } else if (timeframe === 'week') {
@@ -940,6 +1044,14 @@ export function startReminderService(
     const currentConfig = getKanaeConfig()
     if (!currentConfig.enabled) return
 
+    const timingConfig = currentConfig.notificationTiming
+
+    // 通知許可時間帯チェック
+    if (!isWithinAllowedTime(timingConfig)) {
+      console.log('[Reminder] Outside allowed notification hours, skipping')
+      return
+    }
+
     const tasks = getTasks()
     const now = new Date()
     const nowTime = now.getTime()
@@ -953,6 +1065,11 @@ export function startReminderService(
       // 親タスクのみ通知（子タスクは通知しない）
       if (task.parentId !== null && task.parentId !== undefined) continue
       if (task.completed || task.status === 'completed') continue
+
+      // 最小通知間隔チェック
+      if (!hasMinIntervalPassed(task.lastNotifiedAt, timingConfig)) {
+        continue
+      }
 
       let shouldNotify = false
       let notifyType: 'reminder' | 'overdue' | 'followup' = 'reminder'
@@ -999,36 +1116,67 @@ export function startReminderService(
 
       // 追い通知チェック（他の通知がない場合）
       if (!shouldNotify && task.lastNotifiedAt) {
-        const followUpInterval = getFollowUpInterval(task.timeframe)
-        if ((nowTime - task.lastNotifiedAt) >= followUpInterval) {
-          shouldNotify = true
-          notifyType = 'followup'
-          notifyFollowUpCount = (task.followUpCount || 0) + 1
-          updates.followUpCount = notifyFollowUpCount
-          updates.lastNotifiedAt = nowTime
+        const currentFollowUpCount = task.followUpCount || 0
+        // フォローアップ設定チェック
+        if (canSendFollowUp(timingConfig, currentFollowUpCount)) {
+          const followUpInterval = getFollowUpInterval(task.timeframe, timingConfig)
+          if ((nowTime - task.lastNotifiedAt) >= followUpInterval) {
+            shouldNotify = true
+            notifyType = 'followup'
+            notifyFollowUpCount = currentFollowUpCount + 1
+            updates.followUpCount = notifyFollowUpCount
+            updates.lastNotifiedAt = nowTime
+          }
         }
       }
 
       if (shouldNotify) {
-        const msg = getPersonaNotificationMessage(task.title, notifyType, notifyFollowUpCount)
+        const isOverdue = notifyType === 'overdue'
 
-        // デスクトップ通知
+        // デスクトップ通知（Discord通知と同じ頻度制限、LLMでメッセージ生成）
         if (currentConfig.desktopNotificationEnabled) {
-          try {
-            await showNotification(msg.title, msg.body)
-            console.log(`[Reminder] Desktop notification sent: ${task.title}`)
-          } catch (error) {
-            console.error(`[Reminder] Desktop notification failed: ${task.title}`, error)
+          if (shouldSendReminder(task.id, isOverdue, 'desktop')) {
+            try {
+              // メモリを読み込む
+              let memoryContext = ''
+              if (currentConfig.useMemory && currentConfig.memoryFilePath) {
+                const memory = await loadMemory(currentConfig.memoryFilePath)
+                memoryContext = extractMemoryContext(memory)
+              }
+
+              // LLMでメッセージを生成
+              const message = await generateReminderMessageWithPersona(
+                { id: task.id, title: task.title, dueDate: task.dueDate, status: task.status || 'pending' },
+                isOverdue,
+                memoryContext,
+                currentConfig
+              )
+
+              // デスクトップ通知を送信
+              const title = isOverdue ? '⚠️ 期限切れタスク' : '⏰ リマインダー'
+              await showNotification(title, message)
+              markReminderSent(task.id, isOverdue, 'desktop')
+              console.log(`[Reminder] Desktop notification sent: ${task.title}`)
+            } catch (error) {
+              console.error(`[Reminder] Desktop notification failed: ${task.title}`, error)
+              // LLM失敗時はフォールバックメッセージを使用
+              const fallbackMsg = getPersonaNotificationMessage(task.title, notifyType, notifyFollowUpCount)
+              try {
+                await showNotification(fallbackMsg.title, fallbackMsg.body)
+                markReminderSent(task.id, isOverdue, 'desktop')
+              } catch (fallbackError) {
+                console.error(`[Reminder] Desktop fallback notification also failed: ${task.title}`, fallbackError)
+              }
+            }
           }
         }
 
         // Discord通知（期日ベースのリマインダーの場合は重複チェック）
         if (currentConfig.discordEnabled) {
-          const isOverdue = notifyType === 'overdue'
-          if (shouldSendReminder(task.id, isOverdue)) {
+          if (shouldSendReminder(task.id, isOverdue, 'discord')) {
             try {
               await sendReminder(task)
-              markReminderSent(task.id, isOverdue)
+              markReminderSent(task.id, isOverdue, 'discord')
               console.log(`[Reminder] Discord DM sent: ${task.title}`)
             } catch (error) {
               console.error(`[Reminder] Discord DM failed: ${task.title}`, error)

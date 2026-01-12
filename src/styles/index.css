@@ -2167,8 +2167,146 @@ kbd {
 
 /* Calendar Modal */
 .calendar-modal {
-  max-width: 420px;
+  max-width: 720px;
   width: 100%;
+}
+
+/* GitHub-style Contribution Graph */
+.contribution-graph {
+  margin-bottom: var(--space-lg);
+  padding: var(--space-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.contribution-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-sm) 0;
+}
+
+.contribution-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.contribution-months {
+  display: flex;
+  gap: 0;
+  padding-left: 28px;
+  margin-bottom: 4px;
+}
+
+.contribution-month {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex: 1;
+  text-align: left;
+}
+
+.contribution-content {
+  display: flex;
+  gap: 4px;
+}
+
+.contribution-days-label {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  width: 24px;
+  padding: 2px 0;
+}
+
+.contribution-days-label span {
+  font-size: 9px;
+  color: var(--text-muted);
+  text-align: right;
+  padding-right: 4px;
+}
+
+.contribution-grid {
+  display: flex;
+  gap: 3px;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.contribution-week {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.contribution-cell {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  background: var(--bg-tertiary);
+}
+
+.contribution-cell.level-empty {
+  background: transparent;
+}
+
+.contribution-cell.level-0 {
+  background: var(--bg-tertiary);
+}
+
+.contribution-cell.level-1 {
+  background: #9be9a8;
+}
+
+.contribution-cell.level-2 {
+  background: #40c463;
+}
+
+.contribution-cell.level-3 {
+  background: #30a14e;
+}
+
+.contribution-cell.level-4 {
+  background: #216e39;
+}
+
+/* Dark mode contribution colors */
+[data-theme="dark"] .contribution-cell.level-0 {
+  background: #161b22;
+}
+
+[data-theme="dark"] .contribution-cell.level-1 {
+  background: #0e4429;
+}
+
+[data-theme="dark"] .contribution-cell.level-2 {
+  background: #006d32;
+}
+
+[data-theme="dark"] .contribution-cell.level-3 {
+  background: #26a641;
+}
+
+[data-theme="dark"] .contribution-cell.level-4 {
+  background: #39d353;
+}
+
+.contribution-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: var(--space-sm);
+}
+
+.contribution-legend-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.contribution-legend .contribution-cell {
+  width: 10px;
+  height: 10px;
 }
 
 .calendar-header {

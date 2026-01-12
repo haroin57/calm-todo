@@ -49,6 +49,7 @@ export interface Todo {
   id: string
   text: string
   completed: boolean
+  completedAt: number | null  // 完了した日時
   createdAt: number
   parentId: string | null
   priority: Priority

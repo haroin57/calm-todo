@@ -10,10 +10,12 @@ import {
   setKanaeConfig,
   KanaeReminderConfig,
   DEFAULT_KANAE_CONFIG,
+  DEFAULT_NOTIFICATION_TIMING,
   PERSONA_PRESETS,
   AVAILABLE_MODELS,
   DEFAULT_AI_MODELS,
   type AIModelConfig,
+  type NotificationTimingConfig,
 } from '@/services/reminder'
 import {
   getCustomPresets,
@@ -51,6 +53,7 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
     morningPromptTemplate: '',
   })
   const [aiModels, setAiModels] = useState<AIModelConfig>(DEFAULT_AI_MODELS)
+  const [notificationTiming, setNotificationTiming] = useState<NotificationTimingConfig>(DEFAULT_NOTIFICATION_TIMING)
 
   useEffect(() => {
     const savedConfig = getKanaeConfig()
@@ -63,6 +66,7 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
     setDiscordUserId(savedConfig.discordUserId || '')
     setCustomPresets(getCustomPresets())
     setAiModels(savedConfig.aiModels || DEFAULT_AI_MODELS)
+    setNotificationTiming(savedConfig.notificationTiming || DEFAULT_NOTIFICATION_TIMING)
   }, [])
 
   useEffect(() => {
@@ -208,6 +212,7 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
       personaType: 'preset',
       customPersona: null,
       aiModels,
+      notificationTiming,
     })
 
     // APIがある場合のみ成功メッセージ
@@ -667,6 +672,149 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
                 メモリを参照すると、関係性を踏まえたパーソナライズされたリマインドを生成できます。
               </p>
             </div>
+
+            {/* 通知タイミング詳細設定 */}
+            <div className="timing-detail-section">
+              <h5>通知タイミング詳細</h5>
+
+              {/* おやすみモード */}
+              <label className="settings-label">
+                <input
+                  type="checkbox"
+                  checked={notificationTiming.quietHoursEnabled}
+                  onChange={(e) => setNotificationTiming({ ...notificationTiming, quietHoursEnabled: e.target.checked })}
+                />
+                おやすみモード（指定時間帯は通知しない）
+              </label>
+              {notificationTiming.quietHoursEnabled && (
+                <div className="quiet-hours-inputs">
+                  <div className="settings-row-inline">
+                    <span>開始</span>
+                    <input
+                      type="time"
+                      value={notificationTiming.quietHoursStart}
+                      onChange={(e) => setNotificationTiming({ ...notificationTiming, quietHoursStart: e.target.value })}
+                    />
+                  </div>
+                  <div className="settings-row-inline">
+                    <span>終了</span>
+                    <input
+                      type="time"
+                      value={notificationTiming.quietHoursEnd}
+                      onChange={(e) => setNotificationTiming({ ...notificationTiming, quietHoursEnd: e.target.value })}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* 曜日指定 */}
+              <div className="allowed-days-section">
+                <span className="settings-label-text">通知する曜日</span>
+                <div className="days-checkboxes">
+                  {['日', '月', '火', '水', '木', '金', '土'].map((day, index) => (
+                    <label key={index} className="day-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={notificationTiming.allowedDays.includes(index)}
+                        onChange={(e) => {
+                          const newDays = e.target.checked
+                            ? [...notificationTiming.allowedDays, index].sort()
+                            : notificationTiming.allowedDays.filter(d => d !== index)
+                          setNotificationTiming({ ...notificationTiming, allowedDays: newDays })
+                        }}
+                      />
+                      {day}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* フォローアップ（追い通知） */}
+              <label className="settings-label">
+                <input
+                  type="checkbox"
+                  checked={notificationTiming.followUpEnabled}
+                  onChange={(e) => setNotificationTiming({ ...notificationTiming, followUpEnabled: e.target.checked })}
+                />
+                フォローアップ通知（追い通知）
+              </label>
+              {notificationTiming.followUpEnabled && (
+                <div className="followup-inputs">
+                  <div className="settings-row-inline">
+                    <span>間隔</span>
+                    <select
+                      value={notificationTiming.followUpIntervalMinutes}
+                      onChange={(e) => setNotificationTiming({ ...notificationTiming, followUpIntervalMinutes: Number(e.target.value) })}
+                    >
+                      <option value={15}>15分</option>
+                      <option value={30}>30分</option>
+                      <option value={60}>1時間</option>
+                      <option value={120}>2時間</option>
+                      <option value={180}>3時間</option>
+                      <option value={360}>6時間</option>
+                      <option value={720}>12時間</option>
+                    </select>
+                  </div>
+                  <div className="settings-row-inline">
+                    <span>最大回数</span>
+                    <select
+                      value={notificationTiming.followUpMaxCount}
+                      onChange={(e) => setNotificationTiming({ ...notificationTiming, followUpMaxCount: Number(e.target.value) })}
+                    >
+                      <option value={1}>1回</option>
+                      <option value={2}>2回</option>
+                      <option value={3}>3回</option>
+                      <option value={5}>5回</option>
+                      <option value={10}>10回</option>
+                      <option value={99}>無制限</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {/* 最小通知間隔 */}
+              <div className="settings-row-inline">
+                <span>最小通知間隔</span>
+                <select
+                  value={notificationTiming.minIntervalMinutes}
+                  onChange={(e) => setNotificationTiming({ ...notificationTiming, minIntervalMinutes: Number(e.target.value) })}
+                >
+                  <option value={1}>1分</option>
+                  <option value={5}>5分</option>
+                  <option value={10}>10分</option>
+                  <option value={15}>15分</option>
+                  <option value={30}>30分</option>
+                  <option value={60}>1時間</option>
+                </select>
+              </div>
+              <p className="settings-hint">同じタスクへの連続通知を防ぎます</p>
+
+              {/* 1日の通知回数制限 */}
+              <label className="settings-label">
+                <input
+                  type="checkbox"
+                  checked={notificationTiming.dailyLimitEnabled}
+                  onChange={(e) => setNotificationTiming({ ...notificationTiming, dailyLimitEnabled: e.target.checked })}
+                />
+                1日の通知回数を制限
+              </label>
+              {notificationTiming.dailyLimitEnabled && (
+                <div className="settings-row-inline">
+                  <span>上限</span>
+                  <select
+                    value={notificationTiming.dailyLimitCount}
+                    onChange={(e) => setNotificationTiming({ ...notificationTiming, dailyLimitCount: Number(e.target.value) })}
+                  >
+                    <option value={5}>5回</option>
+                    <option value={10}>10回</option>
+                    <option value={15}>15回</option>
+                    <option value={20}>20回</option>
+                    <option value={30}>30回</option>
+                    <option value={50}>50回</option>
+                  </select>
+                </div>
+              )}
+            </div>
           </>
         )}
       </div>
@@ -827,10 +975,60 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
         .persona-section,
         .discord-section,
         .timing-section,
-        .memory-section {
+        .memory-section,
+        .timing-detail-section {
           margin-top: 12px;
           padding-top: 12px;
           border-top: 1px solid var(--border-color);
+        }
+        .timing-detail-section h5 {
+          margin: 0 0 12px 0;
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--text-secondary);
+        }
+        .quiet-hours-inputs {
+          margin-left: 24px;
+          margin-bottom: 12px;
+        }
+        .allowed-days-section {
+          margin: 12px 0;
+        }
+        .settings-label-text {
+          display: block;
+          font-size: 14px;
+          margin-bottom: 8px;
+        }
+        .days-checkboxes {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .day-checkbox {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          padding: 4px 8px;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-color);
+          border-radius: 4px;
+          font-size: 12px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+        .day-checkbox:has(input:checked) {
+          background: var(--accent-primary);
+          border-color: var(--accent-primary);
+          color: white;
+        }
+        .day-checkbox input {
+          width: 12px;
+          height: 12px;
+          margin: 0;
+        }
+        .followup-inputs {
+          margin-left: 24px;
+          margin-bottom: 12px;
         }
         .discord-test-btns {
           display: flex;

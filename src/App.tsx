@@ -399,6 +399,7 @@ export default function App() {
               id: t.id,
               text: t.text,
               completed: t.completed,
+              completedAt: t.completedAt ?? (t.completed ? t.createdAt : null),
               createdAt: t.createdAt,
               parentId: t.parentId ?? null,
               priority,
@@ -545,6 +546,7 @@ export default function App() {
         id: t.id,
         text: t.text,
         completed: t.completed,
+        completedAt: t.completedAt ?? (t.completed ? t.createdAt : null),
         createdAt: t.createdAt,
         parentId: t.parentId ?? null,
         priority,
@@ -612,6 +614,7 @@ export default function App() {
         id: crypto.randomUUID(),
         text: parsed.text,
         completed: false,
+        completedAt: null,
         createdAt: Date.now(),
         parentId: null,
         priority: parsed.priority,
@@ -740,8 +743,9 @@ export default function App() {
       }
       const idsToToggle = new Set([id, ...getDescendantIds(id)])
 
-      // まず対象タスクと子タスクを更新（完了/未完了に応じてkarmaAwardedを更新）
-      let updated = prev.map(todo => idsToToggle.has(todo.id) ? { ...todo, completed: newCompleted, followUpCount: newCompleted ? 0 : todo.followUpCount, lastNotifiedAt: newCompleted ? null : todo.lastNotifiedAt, karmaAwarded: newCompleted } : todo)
+      // まず対象タスクと子タスクを更新（完了/未完了に応じてkarmaAwardedとcompletedAtを更新）
+      const now = Date.now()
+      let updated = prev.map(todo => idsToToggle.has(todo.id) ? { ...todo, completed: newCompleted, completedAt: newCompleted ? now : null, followUpCount: newCompleted ? 0 : todo.followUpCount, lastNotifiedAt: newCompleted ? null : todo.lastNotifiedAt, karmaAwarded: newCompleted } : todo)
 
       // 子タスクを完了した場合、親タスクのすべての子が完了したか確認
       if (newCompleted && target.parentId) {
@@ -750,7 +754,7 @@ export default function App() {
           const siblings = updated.filter(t => t.parentId === parentId)
           const allSiblingsCompleted = siblings.length > 0 && siblings.every(t => t.completed)
           if (allSiblingsCompleted) {
-            updated = updated.map(t => t.id === parentId ? { ...t, completed: true, followUpCount: 0, lastNotifiedAt: null, karmaAwarded: true } : t)
+            updated = updated.map(t => t.id === parentId ? { ...t, completed: true, completedAt: now, followUpCount: 0, lastNotifiedAt: null, karmaAwarded: true } : t)
             // 親の親も確認
             const parent = updated.find(t => t.id === parentId)
             if (parent?.parentId) {
@@ -771,6 +775,7 @@ export default function App() {
           id: crypto.randomUUID(),
           text: target.text,
           completed: false,
+          completedAt: null,
           createdAt: Date.now(),
           parentId: null,
           priority: target.priority,
@@ -1109,6 +1114,7 @@ export default function App() {
       id: crypto.randomUUID(),
       text: st.title,
       completed: false,
+      completedAt: null,
       createdAt: Date.now(),
       parentId,
       priority: mapPriority(st.priority),
@@ -1725,6 +1731,43 @@ export default function App() {
 
   const isSameDay = (d1: Date, d2: Date) => {
     return d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate()
+  }
+
+  // GitHub-style contribution graph helpers
+  const getContributionData = () => {
+    const today = new Date()
+    const data: { date: Date; count: number }[] = []
+
+    // 過去365日分のデータを生成
+    for (let i = 364; i >= 0; i--) {
+      const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i)
+      const dayStart = date.getTime()
+      const dayEnd = dayStart + 24 * 60 * 60 * 1000
+
+      // その日に完了したタスク数をカウント（completedAtを優先、なければdueDate/createdAtで推定）
+      const completedCount = todos.filter(t => {
+        if (!t.completed) return false
+        // completedAtがある場合はそれを使用
+        if (t.completedAt && t.completedAt >= dayStart && t.completedAt < dayEnd) return true
+        // 旧データ互換: completedAtがない場合はdueDate/createdAtで推定
+        if (!t.completedAt) {
+          if (t.dueDate && t.dueDate >= dayStart && t.dueDate < dayEnd) return true
+          if (t.createdAt >= dayStart && t.createdAt < dayEnd) return true
+        }
+        return false
+      }).length
+
+      data.push({ date, count: completedCount })
+    }
+    return data
+  }
+
+  const getContributionLevel = (count: number) => {
+    if (count === 0) return 0
+    if (count <= 2) return 1
+    if (count <= 4) return 2
+    if (count <= 6) return 3
+    return 4
   }
 
   // Generate ICS content for a single task
@@ -2648,6 +2691,7 @@ END:VCALENDAR`
                             id: Date.now().toString() + Math.random().toString(36).slice(2) + index,
                             text: task.title,
                             completed: false,
+                            completedAt: null,
                             createdAt: Date.now() + index,
                             parentId: null,
                             priority,
@@ -3417,6 +3461,78 @@ END:VCALENDAR`
         <div className="modal-overlay" onClick={() => { setShowCalendar(false); setSelectedCalendarDay(null) }}>
           <div className="modal calendar-modal" onClick={e => e.stopPropagation()}>
             <h2>📅 カレンダー</h2>
+
+            {/* GitHub-style Contribution Graph */}
+            <div className="contribution-graph">
+              <h3 className="contribution-title">タスク完了ロードマップ</h3>
+              <div className="contribution-wrapper">
+                <div className="contribution-months">
+                  {(() => {
+                    const months: string[] = []
+                    const today = new Date()
+                    for (let i = 11; i >= 0; i--) {
+                      const d = new Date(today.getFullYear(), today.getMonth() - i, 1)
+                      months.push(['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'][d.getMonth()])
+                    }
+                    return months.map((m, i) => <span key={i} className="contribution-month">{m}</span>)
+                  })()}
+                </div>
+                <div className="contribution-content">
+                  <div className="contribution-days-label">
+                    <span>月</span>
+                    <span>水</span>
+                    <span>金</span>
+                  </div>
+                  <div className="contribution-grid">
+                    {(() => {
+                      const data = getContributionData()
+                      // 週ごとにグループ化（日曜始まり）
+                      const weeks: { date: Date; count: number }[][] = []
+                      let currentWeek: { date: Date; count: number }[] = []
+
+                      // 最初の週の空白を埋める
+                      const firstDayOfWeek = data[0].date.getDay()
+                      for (let i = 0; i < firstDayOfWeek; i++) {
+                        currentWeek.push({ date: new Date(0), count: -1 }) // -1 = empty
+                      }
+
+                      data.forEach((d) => {
+                        currentWeek.push(d)
+                        if (currentWeek.length === 7) {
+                          weeks.push(currentWeek)
+                          currentWeek = []
+                        }
+                      })
+                      if (currentWeek.length > 0) {
+                        weeks.push(currentWeek)
+                      }
+
+                      return weeks.map((week, wi) => (
+                        <div key={wi} className="contribution-week">
+                          {week.map((day, di) => (
+                            <div
+                              key={di}
+                              className={`contribution-cell level-${day.count === -1 ? 'empty' : getContributionLevel(day.count)}`}
+                              title={day.count === -1 ? '' : `${day.date.getMonth() + 1}/${day.date.getDate()}: ${day.count}件完了`}
+                            />
+                          ))}
+                        </div>
+                      ))
+                    })()}
+                  </div>
+                </div>
+              </div>
+              <div className="contribution-legend">
+                <span className="contribution-legend-label">少</span>
+                <div className="contribution-cell level-0" />
+                <div className="contribution-cell level-1" />
+                <div className="contribution-cell level-2" />
+                <div className="contribution-cell level-3" />
+                <div className="contribution-cell level-4" />
+                <span className="contribution-legend-label">多</span>
+              </div>
+            </div>
+
             <div className="calendar-header">
               <button className="calendar-nav-btn" onClick={() => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1))}>◀</button>
               <span className="calendar-month">{calendarDate.getFullYear()}年{calendarDate.getMonth() + 1}月</span>
