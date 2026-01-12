@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { open } from '@tauri-apps/plugin-shell'
+import { showNotification } from '@/lib/utils'
 import { getClaudeApiKey, setClaudeApiKey, clearClaudeApiKey } from '@/lib/claude'
 import { setGeminiApiKey, getGeminiApiKey, clearGeminiApiKey } from '@/lib/gemini'
 import { getApiKey as getOpenAiApiKey, setApiKey as setOpenAiApiKey, clearApiKey as clearOpenAiApiKey } from '@/lib/openai'
@@ -54,6 +55,7 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
   })
   const [aiModels, setAiModels] = useState<AIModelConfig>(DEFAULT_AI_MODELS)
   const [notificationTiming, setNotificationTiming] = useState<NotificationTimingConfig>(DEFAULT_NOTIFICATION_TIMING)
+  const [settingsTab, setSettingsTab] = useState<'general' | 'notification'>('general')
 
   useEffect(() => {
     const savedConfig = getKanaeConfig()
@@ -276,6 +278,25 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
         {getDescriptionByPreset()}
       </p>
 
+      {/* タブナビゲーション */}
+      <div className="settings-tabs">
+        <button
+          className={`settings-tab ${settingsTab === 'general' ? 'active' : ''}`}
+          onClick={() => setSettingsTab('general')}
+        >
+          一般
+        </button>
+        <button
+          className={`settings-tab ${settingsTab === 'notification' ? 'active' : ''}`}
+          onClick={() => setSettingsTab('notification')}
+        >
+          通知
+        </button>
+      </div>
+
+      {/* 一般タブ */}
+      {settingsTab === 'general' && (
+        <>
       {/* 人格設定（最上部） */}
       <div className="settings-subsection persona-top">
         <h4>人格</h4>
@@ -515,7 +536,12 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
           </select>
         </div>
       </div>
+        </>
+      )}
 
+      {/* 通知タブ */}
+      {settingsTab === 'notification' && (
+        <>
       {/* リマインダー設定 */}
       <div className="settings-subsection">
         <h4>リマインダー</h4>
@@ -636,6 +662,46 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
                     type="time"
                     value={config.morningGreetingTime}
                     onChange={(e) => setLocalConfig({ ...config, morningGreetingTime: e.target.value })}
+                  />
+                </div>
+              )}
+
+              <label className="settings-label">
+                <input
+                  type="checkbox"
+                  checked={config.noonGreeting}
+                  onChange={(e) => setLocalConfig({ ...config, noonGreeting: e.target.checked })}
+                />
+                昼の挨拶を送る
+              </label>
+
+              {config.noonGreeting && (
+                <div className="settings-row-inline">
+                  <span>挨拶時間</span>
+                  <input
+                    type="time"
+                    value={config.noonGreetingTime}
+                    onChange={(e) => setLocalConfig({ ...config, noonGreetingTime: e.target.value })}
+                  />
+                </div>
+              )}
+
+              <label className="settings-label">
+                <input
+                  type="checkbox"
+                  checked={config.eveningGreeting}
+                  onChange={(e) => setLocalConfig({ ...config, eveningGreeting: e.target.checked })}
+                />
+                夜の挨拶を送る
+              </label>
+
+              {config.eveningGreeting && (
+                <div className="settings-row-inline">
+                  <span>挨拶時間</span>
+                  <input
+                    type="time"
+                    value={config.eveningGreetingTime}
+                    onChange={(e) => setLocalConfig({ ...config, eveningGreetingTime: e.target.value })}
                   />
                 </div>
               )}
@@ -814,10 +880,83 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
                   </select>
                 </div>
               )}
+
+              {/* 同じタスクへの通知頻度 */}
+              <div className="settings-row-inline">
+                <span>同じタスクへの通知（1日）</span>
+                <select
+                  value={notificationTiming.sameTaskFrequency}
+                  onChange={(e) => setNotificationTiming({
+                    ...notificationTiming,
+                    sameTaskFrequency: e.target.value as 'once' | 'twice' | 'unlimited' | 'custom'
+                  })}
+                >
+                  <option value="once">1回のみ</option>
+                  <option value="twice">2回まで</option>
+                  <option value="custom">カスタム</option>
+                  <option value="unlimited">無制限</option>
+                </select>
+              </div>
+              {notificationTiming.sameTaskFrequency === 'custom' && (
+                <div className="settings-row-inline custom-limit-row">
+                  <span>カスタム上限</span>
+                  <select
+                    value={notificationTiming.sameTaskCustomLimit}
+                    onChange={(e) => setNotificationTiming({ ...notificationTiming, sameTaskCustomLimit: Number(e.target.value) })}
+                  >
+                    <option value={3}>3回</option>
+                    <option value={5}>5回</option>
+                    <option value={10}>10回</option>
+                    <option value={15}>15回</option>
+                    <option value={20}>20回</option>
+                  </select>
+                </div>
+              )}
+              <p className="settings-hint">同じタスクに対して1日に何回まで通知するか</p>
+
+              {/* 期限切れタスクの通知頻度 */}
+              <div className="settings-row-inline">
+                <span>期限切れタスクの通知</span>
+                <select
+                  value={notificationTiming.overdueFrequency}
+                  onChange={(e) => setNotificationTiming({
+                    ...notificationTiming,
+                    overdueFrequency: e.target.value as 'once' | 'daily' | 'twice_daily' | 'hourly'
+                  })}
+                >
+                  <option value="once">1回のみ</option>
+                  <option value="daily">1日1回</option>
+                  <option value="twice_daily">1日2回</option>
+                  <option value="hourly">1時間ごと</option>
+                </select>
+              </div>
+              <p className="settings-hint">期限が切れたタスクをどのくらいの頻度で通知するか</p>
+            </div>
+
+            {/* デスクトップ通知テスト */}
+            <div className="desktop-notification-test">
+              <h5>デスクトップ通知テスト</h5>
+              <p className="settings-hint">デスクトップ通知が正しく動作するかテストします</p>
+              <button
+                className="modal-btn secondary"
+                onClick={() => {
+                  showNotification('テスト通知', '通知が正常に動作しています！')
+                  setTestResult('success')
+                  setTestMessage('デスクトップ通知を送信しました')
+                  setTimeout(() => {
+                    setTestResult(null)
+                    setTestMessage('')
+                  }, 3000)
+                }}
+              >
+                デスクトップ通知テスト
+              </button>
             </div>
           </>
         )}
       </div>
+        </>
+      )}
 
       {testResult && (
         <div className={`test-result ${testResult}`}>
@@ -841,6 +980,32 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
       <style>{`
         .kanae-settings {
           text-align: left;
+        }
+        .settings-tabs {
+          display: flex;
+          gap: 4px;
+          margin-bottom: 16px;
+          border-bottom: 2px solid var(--border-color, #d6d3d1);
+        }
+        .settings-tab {
+          padding: 10px 20px;
+          background: transparent;
+          border: none;
+          border-bottom: 2px solid transparent;
+          margin-bottom: -2px;
+          font-size: 14px;
+          font-weight: 500;
+          color: var(--text-secondary);
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+        .settings-tab:hover {
+          color: var(--text-primary);
+          background: var(--bg-tertiary);
+        }
+        .settings-tab.active {
+          color: var(--accent-primary, #e07b39);
+          border-bottom-color: var(--accent-primary, #e07b39);
         }
         .settings-row {
           margin: 12px 0;
@@ -1030,6 +1195,9 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
           margin-left: 24px;
           margin-bottom: 12px;
         }
+        .custom-limit-row {
+          margin-left: 24px;
+        }
         .discord-test-btns {
           display: flex;
           gap: 8px;
@@ -1108,6 +1276,20 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
           padding: 2px 4px;
           border-radius: 2px;
           font-size: 11px;
+        }
+        .desktop-notification-test {
+          margin-top: 16px;
+          padding-top: 12px;
+          border-top: 1px solid var(--border-color);
+        }
+        .desktop-notification-test h5 {
+          margin: 0 0 8px 0;
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--text-secondary);
+        }
+        .desktop-notification-test button {
+          margin-top: 8px;
         }
       `}</style>
     </div>

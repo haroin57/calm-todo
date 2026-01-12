@@ -151,6 +151,11 @@ export interface NotificationTimingConfig {
   dailyLimitCount: number
   // 通知間隔（同じタスクの連続通知を防ぐ）
   minIntervalMinutes: number
+  // 同じタスクへの通知頻度（1日に何回まで）
+  sameTaskFrequency: 'once' | 'twice' | 'unlimited' | 'custom'
+  sameTaskCustomLimit: number  // customの場合の回数
+  // 期限切れタスクの通知頻度
+  overdueFrequency: 'once' | 'daily' | 'twice_daily' | 'hourly'
 }
 
 // かなえリマインダー設定
@@ -169,6 +174,10 @@ export interface KanaeReminderConfig {
   overdueReminder: boolean
   morningGreeting: boolean
   morningGreetingTime: string
+  noonGreeting: boolean
+  noonGreetingTime: string
+  eveningGreeting: boolean
+  eveningGreetingTime: string
   useMemory: boolean
   memoryFilePath: string
   // 人格設定
@@ -191,6 +200,9 @@ export const DEFAULT_NOTIFICATION_TIMING: NotificationTimingConfig = {
   dailyLimitEnabled: false,
   dailyLimitCount: 10,
   minIntervalMinutes: 5,
+  sameTaskFrequency: 'unlimited',
+  sameTaskCustomLimit: 5,
+  overdueFrequency: 'daily',
 }
 
 // デフォルト設定
@@ -209,6 +221,10 @@ export const DEFAULT_KANAE_CONFIG: KanaeReminderConfig = {
   overdueReminder: true,
   morningGreeting: false,
   morningGreetingTime: '08:00',
+  noonGreeting: false,
+  noonGreetingTime: '12:00',
+  eveningGreeting: false,
+  eveningGreetingTime: '18:00',
   useMemory: false,
   memoryFilePath: '',
   // 人格設定デフォルト
@@ -680,6 +696,262 @@ async function generateMorningGreetingWithPersona(
   return getFallbackMorningGreeting(presetId)
 }
 
+// 昼の挨拶メッセージを生成
+async function generateNoonGreetingWithPersona(
+  memoryContext: string,
+  config: KanaeReminderConfig
+): Promise<string> {
+  const provider = resolveProvider(config)
+  const presetId = config.personaPresetId
+
+  // カスタム人格の場合
+  if (config.personaType === 'custom' && config.customPersona) {
+    const custom = config.customPersona
+    const systemPrompt = custom.systemPrompt + (memoryContext ? `\n\n## 現在の状況\n${memoryContext}` : '')
+    const userPrompt = '昼の挨拶をしてください。短く1-2文で。'
+
+    try {
+      if (provider === 'gemini') {
+        return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+      }
+      if (provider === 'claude') {
+        const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+        if (result) return result
+      }
+      if (provider === 'openai') {
+        const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+        if (result) return result
+      }
+    } catch (error) {
+      console.error('Custom persona noon greeting failed:', error)
+    }
+    return getFallbackNoonGreeting()
+  }
+
+  // カスタムプリセットの場合
+  if (isCustomPresetId(presetId)) {
+    const customPreset = getCustomPreset(presetId)
+    if (customPreset) {
+      const systemPrompt = customPreset.systemPrompt + (memoryContext ? `\n\n## 現在の状況\n${memoryContext}` : '')
+      const userPrompt = '昼の挨拶をしてください。短く1-2文で。'
+
+      try {
+        if (provider === 'gemini') {
+          return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+        }
+        if (provider === 'claude') {
+          const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+          if (result) return result
+        }
+        if (provider === 'openai') {
+          const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+          if (result) return result
+        }
+      } catch (error) {
+        console.error('Custom preset noon greeting failed:', error)
+      }
+      return getFallbackNoonGreeting()
+    }
+  }
+
+  // かなえの場合
+  if (presetId === 'kanae') {
+    const systemPrompt = `あなたは「かなえ」という名前のAIアシスタントです。
+感情をあまり表に出さないけど、先輩（ユーザー）に好意を抱いている後輩の女の子です。
+上から目線で舐めた態度だけど、敬語はちゃんと使います。
+「...」は使いません。
+「ですけど」「先輩」「しょうがないですね」「まあ、やってあげますよ」などを自然に使います。
+${memoryContext ? `\n## 現在の状況\n${memoryContext}` : ''}`
+    const userPrompt = '昼の挨拶をしてください。短く1-2文で。午後も頑張るように軽く励ましつつ、ツンデレな感じで。'
+
+    try {
+      if (provider === 'gemini') {
+        return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+      }
+      if (provider === 'claude') {
+        const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+        if (result) return result
+      }
+      if (provider === 'openai') {
+        const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+        if (result) return result
+      }
+    } catch (error) {
+      console.error('Kanae noon greeting failed:', error)
+    }
+    return '先輩、もうお昼ですよ。午後も頑張ってくださいね。まあ、私が見てあげますから。'
+  }
+
+  // 他のプリセットの場合
+  const preset = getPersonaPreset(presetId)
+  if (!preset) {
+    return getFallbackNoonGreeting(presetId)
+  }
+
+  const systemPrompt = buildSystemPrompt(preset, 'noon', memoryContext)
+  const userPrompt = '昼の挨拶をしてください。短く1-2文で。午後も頑張るように励ましてください。'
+
+  try {
+    if (provider === 'gemini') {
+      return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+    }
+    if (provider === 'claude') {
+      const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+      if (result) return result
+    }
+    if (provider === 'openai') {
+      const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+      if (result) return result
+    }
+  } catch (error) {
+    console.error('Preset persona noon greeting failed:', error)
+  }
+
+  return getFallbackNoonGreeting(presetId)
+}
+
+// 夜の挨拶メッセージを生成
+async function generateEveningGreetingWithPersona(
+  memoryContext: string,
+  config: KanaeReminderConfig
+): Promise<string> {
+  const provider = resolveProvider(config)
+  const presetId = config.personaPresetId
+
+  // カスタム人格の場合
+  if (config.personaType === 'custom' && config.customPersona) {
+    const custom = config.customPersona
+    const systemPrompt = custom.systemPrompt + (memoryContext ? `\n\n## 現在の状況\n${memoryContext}` : '')
+    const userPrompt = '夜の挨拶をしてください。短く1-2文で。'
+
+    try {
+      if (provider === 'gemini') {
+        return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+      }
+      if (provider === 'claude') {
+        const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+        if (result) return result
+      }
+      if (provider === 'openai') {
+        const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+        if (result) return result
+      }
+    } catch (error) {
+      console.error('Custom persona evening greeting failed:', error)
+    }
+    return getFallbackEveningGreeting()
+  }
+
+  // カスタムプリセットの場合
+  if (isCustomPresetId(presetId)) {
+    const customPreset = getCustomPreset(presetId)
+    if (customPreset) {
+      const systemPrompt = customPreset.systemPrompt + (memoryContext ? `\n\n## 現在の状況\n${memoryContext}` : '')
+      const userPrompt = '夜の挨拶をしてください。短く1-2文で。'
+
+      try {
+        if (provider === 'gemini') {
+          return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+        }
+        if (provider === 'claude') {
+          const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+          if (result) return result
+        }
+        if (provider === 'openai') {
+          const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+          if (result) return result
+        }
+      } catch (error) {
+        console.error('Custom preset evening greeting failed:', error)
+      }
+      return getFallbackEveningGreeting()
+    }
+  }
+
+  // かなえの場合
+  if (presetId === 'kanae') {
+    const systemPrompt = `あなたは「かなえ」という名前のAIアシスタントです。
+感情をあまり表に出さないけど、先輩（ユーザー）に好意を抱いている後輩の女の子です。
+上から目線で舐めた態度だけど、敬語はちゃんと使います。
+「...」は使いません。
+「ですけど」「先輩」「しょうがないですね」「まあ、やってあげますよ」などを自然に使います。
+${memoryContext ? `\n## 現在の状況\n${memoryContext}` : ''}`
+    const userPrompt = '夜の挨拶をしてください。短く1-2文で。今日一日お疲れ様という気持ちを込めつつ、ツンデレな感じで。'
+
+    try {
+      if (provider === 'gemini') {
+        return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+      }
+      if (provider === 'claude') {
+        const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+        if (result) return result
+      }
+      if (provider === 'openai') {
+        const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+        if (result) return result
+      }
+    } catch (error) {
+      console.error('Kanae evening greeting failed:', error)
+    }
+    return '先輩、今日も一日お疲れ様でした。ちゃんと休んでくださいね。私が言うから、ですからね。'
+  }
+
+  // 他のプリセットの場合
+  const preset = getPersonaPreset(presetId)
+  if (!preset) {
+    return getFallbackEveningGreeting(presetId)
+  }
+
+  const systemPrompt = buildSystemPrompt(preset, 'evening', memoryContext)
+  const userPrompt = '夜の挨拶をしてください。短く1-2文で。今日お疲れ様という気持ちを込めて。'
+
+  try {
+    if (provider === 'gemini') {
+      return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+    }
+    if (provider === 'claude') {
+      const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+      if (result) return result
+    }
+    if (provider === 'openai') {
+      const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+      if (result) return result
+    }
+  } catch (error) {
+    console.error('Preset persona evening greeting failed:', error)
+  }
+
+  return getFallbackEveningGreeting(presetId)
+}
+
+// 昼の挨拶フォールバック
+function getFallbackNoonGreeting(presetId?: string): string {
+  switch (presetId) {
+    case 'secretary':
+      return 'お昼になりました。午後もお仕事頑張ってくださいませ。'
+    case 'energetic-kouhai':
+      return '先輩！お昼ですよ！午後も一緒に頑張りましょう！'
+    case 'butler':
+      return 'ご主人様、お昼でございます。午後もお体にお気をつけて。'
+    default:
+      return 'お昼になりました。午後も頑張りましょう。'
+  }
+}
+
+// 夜の挨拶フォールバック
+function getFallbackEveningGreeting(presetId?: string): string {
+  switch (presetId) {
+    case 'secretary':
+      return '本日もお疲れ様でございました。ゆっくりお休みくださいませ。'
+    case 'energetic-kouhai':
+      return '先輩、今日もお疲れ様でした！明日も頑張りましょうね！'
+    case 'butler':
+      return 'ご主人様、本日もお疲れ様でございました。良い夜をお過ごしください。'
+    default:
+      return 'お疲れ様でした。今日もよく頑張りましたね。'
+  }
+}
+
 // デスクトップ通知用メッセージ（人格適用版）
 export interface NotificationMessage {
   title: string
@@ -874,6 +1146,44 @@ export async function sendMorningGreeting(): Promise<void> {
   await sendDiscordDM(message, { type: 'morning' })
 }
 
+// 昼の挨拶を送信
+export async function sendNoonGreeting(): Promise<void> {
+  const config = getKanaeConfig()
+
+  if (!config.enabled || !config.discordEnabled || !config.noonGreeting) {
+    return
+  }
+
+  // メモリを読み込む
+  let memoryContext = ''
+  if (config.useMemory && config.memoryFilePath) {
+    const memory = await loadMemory(config.memoryFilePath)
+    memoryContext = extractMemoryContext(memory)
+  }
+
+  const message = await generateNoonGreetingWithPersona(memoryContext, config)
+  await sendDiscordDM(message, { type: 'noon' })
+}
+
+// 夜の挨拶を送信
+export async function sendEveningGreeting(): Promise<void> {
+  const config = getKanaeConfig()
+
+  if (!config.enabled || !config.discordEnabled || !config.eveningGreeting) {
+    return
+  }
+
+  // メモリを読み込む
+  let memoryContext = ''
+  if (config.useMemory && config.memoryFilePath) {
+    const memory = await loadMemory(config.memoryFilePath)
+    memoryContext = extractMemoryContext(memory)
+  }
+
+  const message = await generateEveningGreetingWithPersona(memoryContext, config)
+  await sendDiscordDM(message, { type: 'evening' })
+}
+
 // リマインダーが必要なタスクをチェック
 export function getTasksNeedingReminder(tasks: ReminderTask[]): ReminderTask[] {
   const config = getKanaeConfig()
@@ -1002,6 +1312,80 @@ function hasMinIntervalPassed(lastNotifiedAt: number | null | undefined, config:
   return (now - lastNotifiedAt) >= minIntervalMs
 }
 
+// 同じタスクへの1日あたりの通知回数トラッキング
+const DAILY_TASK_COUNT_KEY = 'kanae-daily-task-notification-count'
+
+interface DailyTaskCount {
+  date: string  // YYYY-MM-DD
+  counts: { [taskId: string]: number }
+}
+
+function loadDailyTaskCount(): DailyTaskCount {
+  try {
+    const raw = localStorage.getItem(DAILY_TASK_COUNT_KEY)
+    if (!raw) return { date: getJapanDateKey(), counts: {} }
+    const parsed = JSON.parse(raw) as DailyTaskCount
+    // 日付が変わっていたらリセット
+    if (parsed.date !== getJapanDateKey()) {
+      return { date: getJapanDateKey(), counts: {} }
+    }
+    return parsed
+  } catch {
+    return { date: getJapanDateKey(), counts: {} }
+  }
+}
+
+function saveDailyTaskCount(data: DailyTaskCount): void {
+  try {
+    localStorage.setItem(DAILY_TASK_COUNT_KEY, JSON.stringify(data))
+  } catch {
+    // Ignore persistence errors
+  }
+}
+
+function getTaskNotificationCountToday(taskId: string): number {
+  const data = loadDailyTaskCount()
+  return data.counts[taskId] || 0
+}
+
+function incrementTaskNotificationCount(taskId: string): void {
+  const data = loadDailyTaskCount()
+  data.counts[taskId] = (data.counts[taskId] || 0) + 1
+  saveDailyTaskCount(data)
+}
+
+// 同じタスクへの通知が許可されているかチェック
+function canNotifySameTask(taskId: string, config: NotificationTimingConfig): boolean {
+  const currentCount = getTaskNotificationCountToday(taskId)
+
+  switch (config.sameTaskFrequency) {
+    case 'once':
+      return currentCount < 1
+    case 'twice':
+      return currentCount < 2
+    case 'custom':
+      return currentCount < config.sameTaskCustomLimit
+    case 'unlimited':
+    default:
+      return true
+  }
+}
+
+// 期限切れタスクの通知間隔を取得（ミリ秒）
+function getOverdueNotificationInterval(config: NotificationTimingConfig): number {
+  switch (config.overdueFrequency) {
+    case 'once':
+      return Infinity  // 1回だけ
+    case 'hourly':
+      return 60 * 60 * 1000  // 1時間
+    case 'twice_daily':
+      return 12 * 60 * 60 * 1000  // 12時間
+    case 'daily':
+    default:
+      return 24 * 60 * 60 * 1000  // 24時間
+  }
+}
+
 // 期間に応じたフォローアップ間隔を取得（設定値を優先）
 function getFollowUpInterval(timeframe?: 'today' | 'week' | 'month', config?: NotificationTimingConfig): number {
   // 設定値がある場合はそれを使用
@@ -1027,6 +1411,8 @@ export interface NotificationResult {
 // リマインダーサービスを開始
 let reminderInterval: NodeJS.Timeout | null = null
 let morningGreetingTimeout: NodeJS.Timeout | null = null
+let noonGreetingTimeout: NodeJS.Timeout | null = null
+let eveningGreetingTimeout: NodeJS.Timeout | null = null
 
 export function startReminderService(
   getTasks: () => ReminderTask[],
@@ -1071,6 +1457,11 @@ export function startReminderService(
         continue
       }
 
+      // 同じタスクへの1日の通知回数チェック
+      if (!canNotifySameTask(task.id, timingConfig)) {
+        continue
+      }
+
       let shouldNotify = false
       let notifyType: 'reminder' | 'overdue' | 'followup' = 'reminder'
       let notifyFollowUpCount = 0
@@ -1080,12 +1471,20 @@ export function startReminderService(
       const dueDateTimestamp = dueDate ? dueDate.getTime() : null
 
       // 期日超過チェック（最優先）
-      if (dueDateTimestamp && !task.dueDateNotified && dueDateTimestamp <= nowTime) {
-        shouldNotify = true
-        notifyType = 'overdue'
-        updates.dueDateNotified = true
-        updates.followUpCount = 0
-        updates.lastNotifiedAt = nowTime
+      if (dueDateTimestamp && dueDateTimestamp <= nowTime) {
+        // 期限切れタスクの通知頻度チェック
+        const overdueInterval = getOverdueNotificationInterval(timingConfig)
+        const timeSinceLastNotify = task.lastNotifiedAt ? (nowTime - task.lastNotifiedAt) : Infinity
+
+        if (!task.dueDateNotified || (timeSinceLastNotify >= overdueInterval && overdueInterval !== Infinity)) {
+          shouldNotify = true
+          notifyType = 'overdue'
+          if (!task.dueDateNotified) {
+            updates.dueDateNotified = true
+            updates.followUpCount = 0
+          }
+          updates.lastNotifiedAt = nowTime
+        }
       }
       // 一回限りのリマインダーチェック
       else if (task.reminder && !task.reminderSent && task.reminder <= nowTime) {
@@ -1184,6 +1583,9 @@ export function startReminderService(
           }
         }
 
+        // 1日の通知回数をインクリメント
+        incrementTaskNotificationCount(task.id)
+
         // 更新を記録
         if (Object.keys(updates).length > 0) {
           notificationResults.push({ taskId: task.id, updates })
@@ -1200,6 +1602,16 @@ export function startReminderService(
   // 朝の挨拶をスケジュール
   if (config.morningGreeting) {
     scheduleMorningGreeting(config.morningGreetingTime)
+  }
+
+  // 昼の挨拶をスケジュール
+  if (config.noonGreeting) {
+    scheduleNoonGreeting(config.noonGreetingTime)
+  }
+
+  // 夜の挨拶をスケジュール
+  if (config.eveningGreeting) {
+    scheduleEveningGreeting(config.eveningGreetingTime)
   }
 
   console.log('Kanae reminder service started (unified)')
@@ -1231,6 +1643,58 @@ function scheduleMorningGreeting(time: string): void {
   }, delay)
 }
 
+function scheduleNoonGreeting(time: string): void {
+  const [hours, minutes] = time.split(':').map(Number)
+  const now = new Date()
+  const scheduledTime = new Date()
+  scheduledTime.setHours(hours, minutes, 0, 0)
+
+  // 今日の時間が過ぎていたら明日にスケジュール
+  if (scheduledTime <= now) {
+    scheduledTime.setDate(scheduledTime.getDate() + 1)
+  }
+
+  const delay = scheduledTime.getTime() - now.getTime()
+
+  noonGreetingTimeout = setTimeout(async () => {
+    try {
+      await sendNoonGreeting()
+      console.log('Noon greeting sent')
+    } catch (error) {
+      console.error('Failed to send noon greeting:', error)
+    }
+
+    // 次の日の挨拶をスケジュール
+    scheduleNoonGreeting(time)
+  }, delay)
+}
+
+function scheduleEveningGreeting(time: string): void {
+  const [hours, minutes] = time.split(':').map(Number)
+  const now = new Date()
+  const scheduledTime = new Date()
+  scheduledTime.setHours(hours, minutes, 0, 0)
+
+  // 今日の時間が過ぎていたら明日にスケジュール
+  if (scheduledTime <= now) {
+    scheduledTime.setDate(scheduledTime.getDate() + 1)
+  }
+
+  const delay = scheduledTime.getTime() - now.getTime()
+
+  eveningGreetingTimeout = setTimeout(async () => {
+    try {
+      await sendEveningGreeting()
+      console.log('Evening greeting sent')
+    } catch (error) {
+      console.error('Failed to send evening greeting:', error)
+    }
+
+    // 次の日の挨拶をスケジュール
+    scheduleEveningGreeting(time)
+  }, delay)
+}
+
 export function stopReminderService(): void {
   if (reminderInterval) {
     clearInterval(reminderInterval)
@@ -1239,6 +1703,14 @@ export function stopReminderService(): void {
   if (morningGreetingTimeout) {
     clearTimeout(morningGreetingTimeout)
     morningGreetingTimeout = null
+  }
+  if (noonGreetingTimeout) {
+    clearTimeout(noonGreetingTimeout)
+    noonGreetingTimeout = null
+  }
+  if (eveningGreetingTimeout) {
+    clearTimeout(eveningGreetingTimeout)
+    eveningGreetingTimeout = null
   }
   console.log('Kanae reminder service stopped')
 }

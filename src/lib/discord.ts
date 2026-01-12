@@ -91,7 +91,7 @@ export async function sendDiscordDM(message: string, options?: {
   taskTitle?: string
   dueDate?: Date | null
   isOverdue?: boolean
-  type?: 'reminder' | 'morning' | 'dueDate'
+  type?: 'reminder' | 'morning' | 'noon' | 'evening' | 'dueDate'
 }): Promise<void> {
   console.log('[Discord] sendDiscordDM called')
   const settings = getDiscordSettings()
@@ -112,10 +112,21 @@ export async function sendDiscordDM(message: string, options?: {
     console.log('[Discord] sendDiscordDM - creating DM channel...')
     const channelId = await createDMChannel(botToken, userId)
 
+    // Embed色を決定
+    const getEmbedColor = () => {
+      if (options?.isOverdue) return 0xED4245 // 赤
+      switch (options?.type) {
+        case 'morning': return 0x57F287 // 緑
+        case 'noon': return 0xFEE75C // 黄色
+        case 'evening': return 0x9B59B6 // 紫
+        default: return 0x5865F2 // 青
+      }
+    }
+
     // Embed作成
     const embed: DiscordEmbed = {
       description: message,
-      color: options?.isOverdue ? 0xED4245 : options?.type === 'morning' ? 0x57F287 : 0x5865F2, // 赤、緑、青
+      color: getEmbedColor(),
       timestamp: new Date().toISOString(),
       footer: { text: 'Calm Todo' },
     }
@@ -123,6 +134,10 @@ export async function sendDiscordDM(message: string, options?: {
     // タイトル設定
     if (options?.type === 'morning') {
       embed.title = '🌅 おはようございます'
+    } else if (options?.type === 'noon') {
+      embed.title = '☀️ お昼です'
+    } else if (options?.type === 'evening') {
+      embed.title = '🌙 お疲れ様でした'
     } else if (options?.type === 'dueDate') {
       embed.title = options?.isOverdue ? '⚠️ 期限切れタスク' : '📅 期日のお知らせ'
     } else if (options?.type === 'reminder') {

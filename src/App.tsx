@@ -56,7 +56,6 @@ import {
 // Utility functions
 import {
   isTauri,
-  showNotification,
   requestNotificationPermission,
   getAutoReminderConfig,
   saveBackup,
@@ -3019,13 +3018,6 @@ END:VCALENDAR`
                   embedded={true}
                   saveRef={kanaeSettingsSaveRef}
                 />
-              </div>
-              <div className="settings-section">
-                <h3>通知テスト</h3>
-                <p className="modal-description">通知が正しく動作するかテストします。</p>
-                <button className="modal-btn secondary" onClick={() => {
-                  showNotification('テスト通知', '通知が正常に動作しています！')
-                }}>通知をテスト</button>
               </div>
               <div className="settings-section">
                 <h3>バックアップ</h3>
