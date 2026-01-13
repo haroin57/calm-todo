@@ -3,12 +3,13 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './styles/index.css'
 import { startAutoUpdateChecker, handleServiceWorkerUpdate } from './utils/updateChecker'
+import { isTauri } from './lib/utils'
 
 // アップデートチェッカーを開始
 startAutoUpdateChecker();
 
-// Register Service Worker for offline support
-if ('serviceWorker' in navigator) {
+// Register Service Worker for offline support (only in web browser, not in Tauri)
+if ('serviceWorker' in navigator && !isTauri()) {
   window.addEventListener('load', async () => {
     try {
       const registration = await navigator.serviceWorker.register('/sw.js');
@@ -26,6 +27,8 @@ if ('serviceWorker' in navigator) {
       console.error('[App] Service Worker registration failed:', error);
     }
   });
+} else if (isTauri()) {
+  console.log('[App] Running in Tauri - Service Worker disabled');
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
