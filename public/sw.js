@@ -1,5 +1,5 @@
 // Version tracking - アップデート時はここを変更
-const APP_VERSION = '0.2.5';
+const APP_VERSION = '0.2.6';
 const CACHE_NAME = `calm-todo-v${APP_VERSION}`;
 const ASSETS_TO_CACHE = [
   '/',

@@ -8,27 +8,48 @@ import { isTauri } from './lib/utils'
 // アップデートチェッカーを開始
 startAutoUpdateChecker();
 
-// Register Service Worker for offline support (only in web browser, not in Tauri)
-if ('serviceWorker' in navigator && !isTauri()) {
-  window.addEventListener('load', async () => {
-    try {
-      const registration = await navigator.serviceWorker.register('/sw.js');
-      console.log('[App] Service Worker registered');
+// Service Worker の処理
+if ('serviceWorker' in navigator) {
+  if (isTauri()) {
+    // Tauri環境: 既存のService Workerを全て解除してキャッシュもクリア
+    window.addEventListener('load', async () => {
+      try {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        for (const registration of registrations) {
+          await registration.unregister();
+          console.log('[App] Unregistered Service Worker in Tauri');
+        }
+        // キャッシュも全てクリア
+        const cacheNames = await caches.keys();
+        for (const cacheName of cacheNames) {
+          await caches.delete(cacheName);
+          console.log(`[App] Deleted cache: ${cacheName}`);
+        }
+        console.log('[App] Running in Tauri - All Service Workers unregistered');
+      } catch (error) {
+        console.error('[App] Failed to unregister Service Workers:', error);
+      }
+    });
+  } else {
+    // ブラウザ環境: Service Workerを登録
+    window.addEventListener('load', async () => {
+      try {
+        const registration = await navigator.serviceWorker.register('/sw.js');
+        console.log('[App] Service Worker registered');
 
-      // Service Worker更新時の処理を設定
-      handleServiceWorkerUpdate(registration);
+        // Service Worker更新時の処理を設定
+        handleServiceWorkerUpdate(registration);
 
-      // 定期的に更新をチェック（30分ごと）
-      setInterval(() => {
-        registration.update();
-      }, 30 * 60 * 1000);
+        // 定期的に更新をチェック（30分ごと）
+        setInterval(() => {
+          registration.update();
+        }, 30 * 60 * 1000);
 
-    } catch (error) {
-      console.error('[App] Service Worker registration failed:', error);
-    }
-  });
-} else if (isTauri()) {
-  console.log('[App] Running in Tauri - Service Worker disabled');
+      } catch (error) {
+        console.error('[App] Service Worker registration failed:', error);
+      }
+    });
+  }
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
