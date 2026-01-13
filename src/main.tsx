@@ -14,18 +14,28 @@ if ('serviceWorker' in navigator) {
     // Tauri環境: 既存のService Workerを全て解除してキャッシュもクリア
     window.addEventListener('load', async () => {
       try {
+        let needsReload = false;
+
         const registrations = await navigator.serviceWorker.getRegistrations();
         for (const registration of registrations) {
           await registration.unregister();
           console.log('[App] Unregistered Service Worker in Tauri');
+          needsReload = true;
         }
         // キャッシュも全てクリア
         const cacheNames = await caches.keys();
         for (const cacheName of cacheNames) {
           await caches.delete(cacheName);
           console.log(`[App] Deleted cache: ${cacheName}`);
+          needsReload = true;
         }
         console.log('[App] Running in Tauri - All Service Workers unregistered');
+
+        // Service WorkerやキャッシュがあったらReload
+        if (needsReload) {
+          console.log('[App] Reloading to apply clean state...');
+          window.location.reload();
+        }
       } catch (error) {
         console.error('[App] Failed to unregister Service Workers:', error);
       }

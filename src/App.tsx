@@ -243,7 +243,7 @@ export default function App() {
   const [exportResult, setExportResult] = useState<{ success: boolean; message: string } | null>(null)
   const [showImportModal, setShowImportModal] = useState(false)
   const [importResult, setImportResult] = useState<{ success: boolean; stats: ImportStats } | null>(null)
-  const [importOptions, setImportOptions] = useState({ importCompleted: false, importPast: false })
+  const [importOptions, setImportOptions] = useState({ importCompleted: false, importPast: false, importEvents: false })
   const [showCalendar, setShowCalendar] = useState(false)
   const [calendarDate, setCalendarDate] = useState(new Date())
   const [selectedCalendarDay, setSelectedCalendarDay] = useState<Date | null>(null)
@@ -2070,6 +2070,8 @@ END:VCALENDAR`
       const { todos: importedTodos, stats } = importICSToTodos(content, {
         importCompleted: importOptions.importCompleted,
         importPast: importOptions.importPast,
+        importEvents: importOptions.importEvents,
+        importTasks: true,
       })
 
       if (importedTodos.length === 0) {
@@ -2105,9 +2107,11 @@ END:VCALENDAR`
         success: false,
         stats: {
           total: 0,
+          totalTasks: 0,
+          totalEvents: 0,
           imported: 0,
           skipped: 0,
-          skippedReasons: { completed: 0, past: 0 },
+          skippedReasons: { completed: 0, past: 0, isEvent: 0 },
         },
       })
     }
@@ -4409,16 +4413,16 @@ END:VCALENDAR`
       {showImportModal && (
         <div className="modal-overlay" onClick={() => { setShowImportModal(false); setImportResult(null) }}>
           <div className="modal import-modal" onClick={e => e.stopPropagation()}>
-            <h2>Googleカレンダーからインポート</h2>
+            <h2>タスクをインポート</h2>
             <p className="modal-description">
-              ICS形式のファイルをインポートして、カレンダーイベントをタスクに変換します。
+              ICS形式のファイルからタスク（VTODO）をインポートします。
+              カレンダー予定（VEVENT）はデフォルトでスキップされます。
             </p>
 
             <div className="import-instructions">
-              <h4>Googleカレンダーからエクスポートする方法</h4>
+              <h4>エクスポート方法</h4>
               <ol>
-                <li><button className="link-button" onClick={() => openExternalLink('https://calendar.google.com/calendar/u/0/r/settings/export')}>Googleカレンダーの設定 →</button> を開く</li>
-                <li>「エクスポート」をクリック</li>
+                <li><button className="link-button" onClick={() => openExternalLink('https://calendar.google.com/calendar/u/0/r/settings/export')}>Googleカレンダーの設定 →</button> または他のカレンダーアプリからエクスポート</li>
                 <li>ダウンロードした .ics ファイルを下で選択</li>
               </ol>
             </div>
@@ -4427,10 +4431,18 @@ END:VCALENDAR`
               <label className="import-option">
                 <input
                   type="checkbox"
+                  checked={importOptions.importEvents}
+                  onChange={e => setImportOptions(prev => ({ ...prev, importEvents: e.target.checked }))}
+                />
+                カレンダー予定（VEVENT）もインポート
+              </label>
+              <label className="import-option">
+                <input
+                  type="checkbox"
                   checked={importOptions.importPast}
                   onChange={e => setImportOptions(prev => ({ ...prev, importPast: e.target.checked }))}
                 />
-                過去のイベントもインポート
+                過去のタスクもインポート
               </label>
               <label className="import-option">
                 <input
@@ -4438,7 +4450,7 @@ END:VCALENDAR`
                   checked={importOptions.importCompleted}
                   onChange={e => setImportOptions(prev => ({ ...prev, importCompleted: e.target.checked }))}
                 />
-                完了済みイベントもインポート
+                完了済みタスクもインポート
               </label>
             </div>
 
@@ -4465,9 +4477,13 @@ END:VCALENDAR`
                 {importResult.success ? (
                   <>
                     <strong>{importResult.stats.imported}件のタスクをインポートしました</strong>
+                    <p className="import-stats-detail">
+                      ファイル内容: タスク {importResult.stats.totalTasks}件 / 予定 {importResult.stats.totalEvents}件
+                    </p>
                     {importResult.stats.skipped > 0 && (
-                      <p>
+                      <p className="import-skipped">
                         {importResult.stats.skipped}件をスキップ
+                        {importResult.stats.skippedReasons.isEvent > 0 && ` (予定: ${importResult.stats.skippedReasons.isEvent}件)`}
                         {importResult.stats.skippedReasons.past > 0 && ` (過去: ${importResult.stats.skippedReasons.past}件)`}
                         {importResult.stats.skippedReasons.completed > 0 && ` (完了済み: ${importResult.stats.skippedReasons.completed}件)`}
                       </p>
@@ -4475,12 +4491,19 @@ END:VCALENDAR`
                   </>
                 ) : (
                   <>
-                    <strong>インポートに失敗しました</strong>
-                    {importResult.stats.total === 0 ? (
-                      <p>有効なイベントが見つかりませんでした</p>
-                    ) : (
-                      <p>
-                        {importResult.stats.skipped}件すべてスキップされました
+                    <strong>インポートできるタスクがありませんでした</strong>
+                    <p className="import-stats-detail">
+                      ファイル内容: タスク {importResult.stats.totalTasks}件 / 予定 {importResult.stats.totalEvents}件
+                    </p>
+                    {importResult.stats.totalTasks === 0 && importResult.stats.totalEvents > 0 && (
+                      <p className="import-hint">
+                        予定をインポートするには「カレンダー予定もインポート」にチェックを入れてください
+                      </p>
+                    )}
+                    {importResult.stats.skipped > 0 && (
+                      <p className="import-skipped">
+                        {importResult.stats.skipped}件すべてスキップ
+                        {importResult.stats.skippedReasons.isEvent > 0 && ` (予定: ${importResult.stats.skippedReasons.isEvent}件)`}
                         {importResult.stats.skippedReasons.past > 0 && ` (過去: ${importResult.stats.skippedReasons.past}件)`}
                         {importResult.stats.skippedReasons.completed > 0 && ` (完了済み: ${importResult.stats.skippedReasons.completed}件)`}
                       </p>

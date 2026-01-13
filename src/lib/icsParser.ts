@@ -1,8 +1,10 @@
 // ICS (iCalendar) ファイルパーサー
-// Googleカレンダーからエクスポートしたデータをインポートするためのユーティリティ
+// Googleカレンダー/Googleタスクからエクスポートしたデータをインポートするためのユーティリティ
 
 import type { Todo } from '@/types/todo'
 import type { RecurrencePattern } from '@/lib/parseNaturalLanguage'
+
+export type ICSItemType = 'event' | 'task'
 
 export interface ICSEvent {
   uid: string
@@ -10,10 +12,13 @@ export interface ICSEvent {
   description?: string
   dtstart: Date
   dtend?: Date
+  due?: Date  // VTODOの期限
   rrule?: RRuleData
   categories?: string[]
   priority?: number
   status?: string
+  type: ICSItemType  // 'event' = VEVENT, 'task' = VTODO
+  percentComplete?: number  // VTODO用: 進捗率
 }
 
 interface RRuleData {
@@ -27,62 +32,80 @@ interface RRuleData {
 }
 
 /**
- * ICSファイルの内容を解析してイベント配列を返す
+ * ICSファイルの内容を解析してイベント/タスク配列を返す
+ * VEVENT（予定）とVTODO（タスク）の両方をパース
  */
 export function parseICS(icsContent: string): ICSEvent[] {
   const events: ICSEvent[] = []
   const lines = unfoldLines(icsContent)
 
-  let currentEvent: Partial<ICSEvent> | null = null
+  let currentItem: Partial<ICSEvent> | null = null
+  let currentType: ICSItemType | null = null
 
   for (const line of lines) {
     const { name, params, value } = parseLine(line)
 
-    if (name === 'BEGIN' && value === 'VEVENT') {
-      currentEvent = {}
-    } else if (name === 'END' && value === 'VEVENT') {
-      if (currentEvent && currentEvent.summary && currentEvent.dtstart) {
+    // VEVENT（予定）またはVTODO（タスク）の開始
+    if (name === 'BEGIN' && (value === 'VEVENT' || value === 'VTODO')) {
+      currentItem = {}
+      currentType = value === 'VTODO' ? 'task' : 'event'
+    }
+    // VEVENT または VTODO の終了
+    else if (name === 'END' && (value === 'VEVENT' || value === 'VTODO')) {
+      if (currentItem && currentItem.summary && currentType) {
+        // VTODOの場合、dtstartがなければdueを使用、それもなければ現在時刻
+        const startDate = currentItem.dtstart || currentItem.due || new Date()
         events.push({
-          uid: currentEvent.uid || crypto.randomUUID(),
-          summary: currentEvent.summary,
-          description: currentEvent.description,
-          dtstart: currentEvent.dtstart,
-          dtend: currentEvent.dtend,
-          rrule: currentEvent.rrule,
-          categories: currentEvent.categories,
-          priority: currentEvent.priority,
-          status: currentEvent.status,
+          uid: currentItem.uid || crypto.randomUUID(),
+          summary: currentItem.summary,
+          description: currentItem.description,
+          dtstart: startDate,
+          dtend: currentItem.dtend,
+          due: currentItem.due,
+          rrule: currentItem.rrule,
+          categories: currentItem.categories,
+          priority: currentItem.priority,
+          status: currentItem.status,
+          type: currentType,
+          percentComplete: currentItem.percentComplete,
         })
       }
-      currentEvent = null
-    } else if (currentEvent) {
+      currentItem = null
+      currentType = null
+    } else if (currentItem) {
       switch (name) {
         case 'UID':
-          currentEvent.uid = value
+          currentItem.uid = value
           break
         case 'SUMMARY':
-          currentEvent.summary = unescapeText(value)
+          currentItem.summary = unescapeText(value)
           break
         case 'DESCRIPTION':
-          currentEvent.description = unescapeText(value)
+          currentItem.description = unescapeText(value)
           break
         case 'DTSTART':
-          currentEvent.dtstart = parseDateTime(value, params)
+          currentItem.dtstart = parseDateTime(value, params)
           break
         case 'DTEND':
-          currentEvent.dtend = parseDateTime(value, params)
+          currentItem.dtend = parseDateTime(value, params)
+          break
+        case 'DUE':
+          currentItem.due = parseDateTime(value, params)
           break
         case 'RRULE':
-          currentEvent.rrule = parseRRule(value)
+          currentItem.rrule = parseRRule(value)
           break
         case 'CATEGORIES':
-          currentEvent.categories = value.split(',').map(c => c.trim())
+          currentItem.categories = value.split(',').map(c => c.trim())
           break
         case 'PRIORITY':
-          currentEvent.priority = parseInt(value, 10)
+          currentItem.priority = parseInt(value, 10)
           break
         case 'STATUS':
-          currentEvent.status = value
+          currentItem.status = value
+          break
+        case 'PERCENT-COMPLETE':
+          currentItem.percentComplete = parseInt(value, 10)
           break
       }
     }
@@ -264,11 +287,12 @@ export function icsEventToTodo(event: ICSEvent): Omit<Todo, 'id'> {
   // ラベルを抽出
   const labels = event.categories || []
 
-  // 完了状態を判定
-  const completed = event.status === 'COMPLETED'
+  // 完了状態を判定（VTODOの場合は進捗率100%も完了とみなす）
+  const completed = event.status === 'COMPLETED' || event.percentComplete === 100
 
-  // 期限に応じたtimeframeを決定
-  const dueDate = event.dtstart.getTime()
+  // 期限を決定（VTODOの場合はdueを優先、なければdtstart）
+  const dueDateValue = event.due || event.dtstart
+  const dueDate = dueDateValue.getTime()
   const now = Date.now()
   const diffDays = Math.ceil((dueDate - now) / (1000 * 60 * 60 * 24))
   let timeframe: 'today' | 'week' | 'month' | 'year' = 'today'
@@ -324,40 +348,64 @@ export function importICSToTodos(
   options: {
     importCompleted?: boolean
     importPast?: boolean
+    importTasks?: boolean  // VTODOをインポート（デフォルト: true）
+    importEvents?: boolean // VEVENTをインポート（デフォルト: false）
   } = {}
 ): { todos: Omit<Todo, 'id'>[]; stats: ImportStats } {
-  const { importCompleted = true, importPast = false } = options
-  const events = parseICS(icsContent)
+  const {
+    importCompleted = true,
+    importPast = false,
+    importTasks = true,
+    importEvents = false,
+  } = options
+  const allItems = parseICS(icsContent)
   const now = Date.now()
 
   const stats: ImportStats = {
-    total: events.length,
+    total: allItems.length,
+    totalTasks: allItems.filter(e => e.type === 'task').length,
+    totalEvents: allItems.filter(e => e.type === 'event').length,
     imported: 0,
     skipped: 0,
     skippedReasons: {
       completed: 0,
       past: 0,
+      isEvent: 0,
     },
   }
 
   const todos: Omit<Todo, 'id'>[] = []
 
-  for (const event of events) {
-    // 完了済みイベントをスキップ
-    if (!importCompleted && event.status === 'COMPLETED') {
+  for (const item of allItems) {
+    // タイプによるフィルタリング
+    if (item.type === 'task' && !importTasks) {
+      stats.skipped++
+      continue
+    }
+    if (item.type === 'event' && !importEvents) {
+      stats.skipped++
+      stats.skippedReasons.isEvent++
+      continue
+    }
+
+    // 完了済みアイテムをスキップ
+    if (!importCompleted && (item.status === 'COMPLETED' || item.percentComplete === 100)) {
       stats.skipped++
       stats.skippedReasons.completed++
       continue
     }
 
-    // 過去のイベントをスキップ（繰り返しイベントは除く）
-    if (!importPast && !event.rrule && event.dtstart.getTime() < now) {
+    // 期限を取得（VTODOはdue優先）
+    const itemDate = item.due || item.dtstart
+
+    // 過去のアイテムをスキップ（繰り返しアイテムは除く）
+    if (!importPast && !item.rrule && itemDate.getTime() < now) {
       stats.skipped++
       stats.skippedReasons.past++
       continue
     }
 
-    todos.push(icsEventToTodo(event))
+    todos.push(icsEventToTodo(item))
     stats.imported++
   }
 
@@ -366,10 +414,13 @@ export function importICSToTodos(
 
 export interface ImportStats {
   total: number
+  totalTasks: number   // VTODOの数
+  totalEvents: number  // VEVENTの数
   imported: number
   skipped: number
   skippedReasons: {
     completed: number
     past: number
+    isEvent: number  // 予定としてスキップされた数
   }
 }

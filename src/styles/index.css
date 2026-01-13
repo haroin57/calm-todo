@@ -2832,6 +2832,23 @@ kbd {
   opacity: 0.8;
 }
 
+.import-stats-detail {
+  margin-top: var(--space-xs) !important;
+  color: var(--text-secondary) !important;
+}
+
+.import-skipped {
+  margin-top: var(--space-xs) !important;
+}
+
+.import-hint {
+  margin-top: var(--space-sm) !important;
+  padding: var(--space-xs) var(--space-sm);
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-sm);
+  font-style: italic;
+}
+
 /* ============================================
    Labels / Tags
    ============================================ */
