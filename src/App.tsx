@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { KanaeReminderSettings } from './components/settings/KanaeReminderSettings'
 import { decomposeTask, getKanaeConfig, startReminderService, stopReminderService, type ReminderTask, type Subtask, type NotificationResult } from './services/reminder'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { open } from '@tauri-apps/plugin-shell'
 
 import { parseNaturalLanguage, getNextRecurrenceDate, formatRecurrence, type RecurrencePattern } from './lib/parseNaturalLanguage'
 import { importICSToTodos, type ImportStats } from './lib/icsParser'
@@ -1130,9 +1131,13 @@ export default function App() {
       todo.timeframe === 'week' ? 'month' :
       todo.timeframe === 'month' ? 'year' : 'today'
 
+    // 親タスクと子タスクを一緒に移動
     updateTodosWithHistory(prev => prev.map(t => {
-      if (t.id !== id) return t
-      return { ...t, timeframe: next }
+      // 対象のタスク
+      if (t.id === id) return { ...t, timeframe: next }
+      // 子タスクも一緒に移動
+      if (t.parentId === id) return { ...t, timeframe: next }
+      return t
     }))
 
     // ビューをインボックスに保ち、タイムフレームを更新
@@ -2108,6 +2113,18 @@ END:VCALENDAR`
     }
   }
 
+  // 外部リンクを開く（Tauri環境ではshell.openを使用）
+  const openExternalLink = useCallback((url: string) => {
+    if (isTauri()) {
+      open(url).catch(err => {
+        console.error('Failed to open URL with Tauri shell:', err)
+        window.open(url, '_blank')
+      })
+    } else {
+      window.open(url, '_blank')
+    }
+  }, [])
+
   // Export to ICS and open Google Calendar import page
   const exportToGoogleCalendar = () => {
     const tasksWithDueDate = todos.filter(t => t.dueDate)
@@ -2118,7 +2135,7 @@ END:VCALENDAR`
       tasksWithDueDate.forEach((todo, i) => {
         const url = getGoogleCalendarURL(todo)
         if (url) {
-          setTimeout(() => window.open(url, '_blank'), i * 300)
+          setTimeout(() => openExternalLink(url), i * 300)
         }
       })
       return
@@ -2127,7 +2144,7 @@ END:VCALENDAR`
     // For more tasks, export ICS and open Google Calendar import settings
     exportAllToICS()
     setTimeout(() => {
-      window.open('https://calendar.google.com/calendar/u/0/r/settings/export', '_blank')
+      openExternalLink('https://calendar.google.com/calendar/u/0/r/settings/export')
     }, 500)
   }
 
@@ -4364,7 +4381,7 @@ END:VCALENDAR`
                         <span className="calendar-task-text">{todo.text}</span>
                         <div className="calendar-task-actions">
                           <button className="calendar-export-btn" onClick={() => downloadTaskICS(todo)} title="ICSダウンロード">📥</button>
-                          <a href={getGoogleCalendarURL(todo) || '#'} target="_blank" rel="noopener noreferrer" className="calendar-export-btn" title="Googleカレンダーに追加">G</a>
+                          <button className="calendar-export-btn" onClick={() => { const url = getGoogleCalendarURL(todo); if (url) openExternalLink(url) }} title="Googleカレンダーに追加">G</button>
                         </div>
                       </li>
                     ))}
@@ -4400,7 +4417,7 @@ END:VCALENDAR`
             <div className="import-instructions">
               <h4>Googleカレンダーからエクスポートする方法</h4>
               <ol>
-                <li><a href="https://calendar.google.com/calendar/u/0/r/settings/export" target="_blank" rel="noopener noreferrer">Googleカレンダーの設定 →</a> を開く</li>
+                <li><button className="link-button" onClick={() => openExternalLink('https://calendar.google.com/calendar/u/0/r/settings/export')}>Googleカレンダーの設定 →</button> を開く</li>
                 <li>「エクスポート」をクリック</li>
                 <li>ダウンロードした .ics ファイルを下で選択</li>
               </ol>

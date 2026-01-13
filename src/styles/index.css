@@ -2713,12 +2713,34 @@ kbd {
   line-height: 1.5;
 }
 
-.import-instructions a {
+.import-instructions a,
+.import-instructions .link-button {
   color: var(--accent-primary);
   text-decoration: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
 }
 
-.import-instructions a:hover {
+.import-instructions a:hover,
+.import-instructions .link-button:hover {
+  text-decoration: underline;
+}
+
+/* リンクボタン - アンカータグの見た目のボタン */
+.link-button {
+  color: var(--accent-primary);
+  text-decoration: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.link-button:hover {
   text-decoration: underline;
 }
 
