@@ -10,7 +10,7 @@ const VERSION_KEY = 'calm-todo-version';
 const LAST_UPDATE_CHECK = 'calm-todo-last-update';
 
 // 現在のバージョンを取得（ビルド時に自動更新される）
-export const CURRENT_VERSION = '0.2.4';
+export const CURRENT_VERSION = '0.2.5';
 
 /**
  * バージョンをチェックして更新があるか確認
