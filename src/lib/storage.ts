@@ -18,6 +18,7 @@ export const VIEW_MODE_KEY = 'calm-todo-view-mode'
 export const PROJECTS_KEY = 'calm-todo-projects'
 export const ACTIVITY_LOG_KEY = 'calm-todo-activity'
 export const KARMA_KEY = 'calm-todo-karma'
+export const LABELS_KEY = 'calm-todo-labels'
 
 // Custom Filters
 export function loadCustomFilters(): CustomFilter[] {
@@ -107,24 +108,47 @@ export function saveKarma(karma: KarmaStats) {
   localStorage.setItem(KARMA_KEY, JSON.stringify(karma))
 }
 
+// レベルごとの必要ポイント
+export const LEVEL_THRESHOLDS = [0, 0, 100, 300, 600, 1000, 1500, 2100, 2800, 3600, 4500]
+
 // Karma level calculation
 export function calculateLevel(points: number): number {
-  if (points < 100) return 1
-  if (points < 300) return 2
-  if (points < 600) return 3
-  if (points < 1000) return 4
-  if (points < 1500) return 5
-  if (points < 2100) return 6
-  if (points < 2800) return 7
-  if (points < 3600) return 8
-  if (points < 4500) return 9
-  return 10
+  for (let i = LEVEL_THRESHOLDS.length - 1; i >= 1; i--) {
+    if (points >= LEVEL_THRESHOLDS[i]) return i
+  }
+  return 1
+}
+
+// 次のレベルに必要なポイント
+export function getPointsForNextLevel(level: number): number {
+  if (level >= 10) return Infinity
+  return LEVEL_THRESHOLDS[level + 1]
+}
+
+// 現在のレベルの開始ポイント
+export function getPointsForCurrentLevel(level: number): number {
+  return LEVEL_THRESHOLDS[level] || 0
 }
 
 // Level name
 export function getLevelName(level: number): string {
   const names = ['', '初心者', '見習い', '実践者', '熟練者', '達人', 'マスター', 'グランドマスター', '伝説', '神話', '超越者']
   return names[level] || '超越者'
+}
+
+// 優先度ごとの基本ポイント
+export const PRIORITY_POINTS: Record<number, number> = { 1: 10, 2: 7, 3: 5, 4: 3 }
+
+// 所要時間によるボーナス計算
+export function getDifficultyBonus(estimatedMinutes: number | null): number {
+  if (!estimatedMinutes || estimatedMinutes <= 0) return 0
+  if (estimatedMinutes <= 15) return 2
+  if (estimatedMinutes <= 30) return 5
+  if (estimatedMinutes <= 60) return 12
+  if (estimatedMinutes <= 120) return 25
+  if (estimatedMinutes <= 240) return 45
+  if (estimatedMinutes <= 480) return 80
+  return 120 // 8時間以上
 }
 
 // View Mode
@@ -268,4 +292,19 @@ export function loadCollapsed(): Set<string> {
 
 export function saveCollapsed(collapsed: Set<string>) {
   localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]))
+}
+
+// Labels（タスクが全削除されても保持されるラベルリスト）
+export function loadLabels(): string[] {
+  try {
+    const saved = localStorage.getItem(LABELS_KEY)
+    if (!saved) return []
+    return JSON.parse(saved)
+  } catch {
+    return []
+  }
+}
+
+export function saveLabels(labels: string[]) {
+  localStorage.setItem(LABELS_KEY, JSON.stringify(labels))
 }

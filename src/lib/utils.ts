@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Todo, Timeframe, AutoReminderConfig } from '@/types/todo'
+import type { Todo } from '@/types/todo'
 
 // Check if running in Tauri environment
 export const isTauri = () => {
@@ -24,26 +24,6 @@ export async function showNotification(title: string, body: string) {
     }
   } else {
     console.log('Not in Tauri environment')
-  }
-}
-
-// 期間に基づいた自動リマインダー設定を生成
-// 今日: 当日の12:00と18:00
-// 1週間: 毎日12:00と18:00
-// 1ヶ月: 毎日12:00
-export function getAutoReminderConfig(timeframe: Timeframe): AutoReminderConfig {
-  const allDays = [0, 1, 2, 3, 4, 5, 6] // 毎日
-  const today = new Date().getDay()
-
-  if (timeframe === 'today') {
-    // 今日: 当日の12:00と18:00
-    return { times: ['12:00', '18:00'], days: [today] }
-  } else if (timeframe === 'week') {
-    // 1週間: 毎日12:00と18:00
-    return { times: ['12:00', '18:00'], days: allDays }
-  } else {
-    // 1ヶ月: 毎日12:00
-    return { times: ['12:00'], days: allDays }
   }
 }
 

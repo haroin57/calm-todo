@@ -1,6 +1,6 @@
 [package]
 name = "calm-todo"
-version = "0.2.3"
+version = "0.2.4"
 description = "A calm and beautiful todo app"
 authors = ["you"]
 edition = "2021"

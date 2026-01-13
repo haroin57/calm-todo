@@ -140,6 +140,17 @@ export interface PlanTask {
   priority: "high" | "medium" | "low"
   daysFromStart: number
   estimatedMinutes: number
+  recurrence?: {
+    type: "daily" | "weekly" | "monthly" | "yearly"
+    interval: number
+    // weekly用: 曜日 (0=日曜, 1=月曜, ...)
+    dayOfWeek?: number
+    // monthly用: 日付 (1-31)
+    dayOfMonth?: number
+    // yearly用: 月と日
+    monthOfYear?: number
+    dayOfYear?: number
+  } | null
   selected?: boolean  // UI用
   editing?: boolean   // UI用
 }

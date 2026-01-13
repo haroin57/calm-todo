@@ -56,6 +56,14 @@ type MemoryItem = MemoryEntity | MemoryRelation
 export type ReminderTaskDueDate = { toDate: () => Date } | Date | number | null
 export type TaskStatus = 'pending' | 'completed' | 'archived'
 
+// 期日通知設定
+export interface DueDateNotification {
+  enabled: boolean
+  notifyBefore: number  // 期日の何分前に通知するか
+  notifiedAt: number | null
+  followUpCount: number
+}
+
 export interface ReminderTask {
   id: string
   title: string
@@ -64,18 +72,8 @@ export interface ReminderTask {
   // 追加フィールド（デスクトップ通知用）
   parentId?: string | null
   completed?: boolean
-  reminder?: number | null
-  reminderSent?: boolean
-  weeklyReminder?: {
-    days: number[]
-    time: string        // legacy単一時刻
-    times: string[]     // 複数時刻
-    lastSent: { [time: string]: string } | null
-  } | null
-  dueDateNotified?: boolean
-  followUpCount?: number
-  lastNotifiedAt?: number | null
-  timeframe?: 'today' | 'week' | 'month'
+  dueDateNotification?: DueDateNotification | null
+  timeframe?: 'today' | 'week' | 'month' | 'year'
 }
 
 function resolveDueDate(dueDate: ReminderTaskDueDate): Date | null {
@@ -1387,7 +1385,7 @@ function getOverdueNotificationInterval(config: NotificationTimingConfig): numbe
 }
 
 // 期間に応じたフォローアップ間隔を取得（設定値を優先）
-function getFollowUpInterval(timeframe?: 'today' | 'week' | 'month', config?: NotificationTimingConfig): number {
+function getFollowUpInterval(timeframe?: 'today' | 'week' | 'month' | 'year', config?: NotificationTimingConfig): number {
   // 設定値がある場合はそれを使用
   if (config?.followUpIntervalMinutes) {
     return config.followUpIntervalMinutes * 60 * 1000
@@ -1397,8 +1395,10 @@ function getFollowUpInterval(timeframe?: 'today' | 'week' | 'month', config?: No
     return 30 * 60 * 1000 // 30分
   } else if (timeframe === 'week') {
     return 2 * 60 * 60 * 1000 // 2時間
-  } else {
+  } else if (timeframe === 'month') {
     return 15 * 24 * 60 * 60 * 1000 // 半月 (15日)
+  } else {
+    return 30 * 24 * 60 * 60 * 1000 // 1ヶ月 (30日)
   }
 }
 
@@ -1441,9 +1441,6 @@ export function startReminderService(
     const tasks = getTasks()
     const now = new Date()
     const nowTime = now.getTime()
-    const todayStr = now.toISOString().slice(0, 10)
-    const currentDay = now.getDay()
-    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
 
     const notificationResults: NotificationResult[] = []
 
@@ -1452,8 +1449,13 @@ export function startReminderService(
       if (task.parentId !== null && task.parentId !== undefined) continue
       if (task.completed || task.status === 'completed') continue
 
+      // 期日通知が無効または設定がない場合はスキップ
+      if (!task.dueDateNotification?.enabled) continue
+
+      const notification = task.dueDateNotification
+
       // 最小通知間隔チェック
-      if (!hasMinIntervalPassed(task.lastNotifiedAt, timingConfig)) {
+      if (!hasMinIntervalPassed(notification.notifiedAt, timingConfig)) {
         continue
       }
 
@@ -1470,61 +1472,53 @@ export function startReminderService(
       const dueDate = resolveDueDate(task.dueDate)
       const dueDateTimestamp = dueDate ? dueDate.getTime() : null
 
+      if (!dueDateTimestamp) continue
+
+      // 通知時刻を計算（期日 - notifyBefore分）
+      const notifyTime = dueDateTimestamp - notification.notifyBefore * 60 * 1000
+
       // 期日超過チェック（最優先）
-      if (dueDateTimestamp && dueDateTimestamp <= nowTime) {
+      if (dueDateTimestamp <= nowTime) {
         // 期限切れタスクの通知頻度チェック
         const overdueInterval = getOverdueNotificationInterval(timingConfig)
-        const timeSinceLastNotify = task.lastNotifiedAt ? (nowTime - task.lastNotifiedAt) : Infinity
+        const timeSinceLastNotify = notification.notifiedAt ? (nowTime - notification.notifiedAt) : Infinity
 
-        if (!task.dueDateNotified || (timeSinceLastNotify >= overdueInterval && overdueInterval !== Infinity)) {
+        if (!notification.notifiedAt || (timeSinceLastNotify >= overdueInterval && overdueInterval !== Infinity)) {
           shouldNotify = true
           notifyType = 'overdue'
-          if (!task.dueDateNotified) {
-            updates.dueDateNotified = true
-            updates.followUpCount = 0
+          updates.dueDateNotification = {
+            ...notification,
+            notifiedAt: nowTime,
+            followUpCount: notification.notifiedAt ? notification.followUpCount : 0
           }
-          updates.lastNotifiedAt = nowTime
         }
       }
-      // 一回限りのリマインダーチェック
-      else if (task.reminder && !task.reminderSent && task.reminder <= nowTime) {
+      // 通知時刻チェック（期日前の通知）
+      else if (notifyTime <= nowTime && !notification.notifiedAt) {
         shouldNotify = true
         notifyType = 'reminder'
-        updates.reminderSent = true
-        updates.followUpCount = 0
-        updates.lastNotifiedAt = nowTime
-      }
-      // 週次リマインダーチェック
-      else if (task.weeklyReminder) {
-        const { days, times, lastSent } = task.weeklyReminder
-        const lastSentMap = lastSent || {}
-
-        for (const time of (times || [])) {
-          const timeLastSent = lastSentMap[time]
-          if (days.includes(currentDay) && currentTime >= time && timeLastSent !== todayStr) {
-            shouldNotify = true
-            notifyType = 'reminder'
-            const newLastSent = { ...lastSentMap, [time]: todayStr }
-            updates.weeklyReminder = { ...task.weeklyReminder, lastSent: newLastSent }
-            updates.followUpCount = 0
-            updates.lastNotifiedAt = nowTime
-            break
-          }
+        updates.dueDateNotification = {
+          ...notification,
+          notifiedAt: nowTime,
+          followUpCount: 0
         }
       }
 
       // 追い通知チェック（他の通知がない場合）
-      if (!shouldNotify && task.lastNotifiedAt) {
-        const currentFollowUpCount = task.followUpCount || 0
+      if (!shouldNotify && notification.notifiedAt) {
+        const currentFollowUpCount = notification.followUpCount || 0
         // フォローアップ設定チェック
         if (canSendFollowUp(timingConfig, currentFollowUpCount)) {
           const followUpInterval = getFollowUpInterval(task.timeframe, timingConfig)
-          if ((nowTime - task.lastNotifiedAt) >= followUpInterval) {
+          if ((nowTime - notification.notifiedAt) >= followUpInterval) {
             shouldNotify = true
             notifyType = 'followup'
             notifyFollowUpCount = currentFollowUpCount + 1
-            updates.followUpCount = notifyFollowUpCount
-            updates.lastNotifiedAt = nowTime
+            updates.dueDateNotification = {
+              ...notification,
+              notifiedAt: nowTime,
+              followUpCount: notifyFollowUpCount
+            }
           }
         }
       }

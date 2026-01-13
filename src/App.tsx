@@ -4,7 +4,7 @@ import { decomposeTask, getKanaeConfig, startReminderService, stopReminderServic
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
-import { parseNaturalLanguage, getNextRecurrenceDate, formatRecurrence } from './lib/parseNaturalLanguage'
+import { parseNaturalLanguage, getNextRecurrenceDate, formatRecurrence, type RecurrencePattern } from './lib/parseNaturalLanguage'
 import { generatePlan, type PlanTask, type PlanResult } from './services/plan'
 import { searchWithTavily, formatSearchResultsForPrompt, getTavilyApiKey } from './lib/tavily'
 import { getApiKey as getOpenAiApiKey } from './lib/openai'
@@ -45,19 +45,25 @@ import {
   saveKarma,
   calculateLevel,
   getLevelName,
+  getPointsForNextLevel,
+  getPointsForCurrentLevel,
+  PRIORITY_POINTS,
+  getDifficultyBonus,
+  LEVEL_THRESHOLDS,
   loadViewMode,
   saveViewMode,
   loadTodos,
   saveTodos,
   loadCollapsed,
   saveCollapsed,
+  loadLabels,
+  saveLabels,
 } from '@/lib/storage'
 
 // Utility functions
 import {
   isTauri,
   requestNotificationPermission,
-  getAutoReminderConfig,
   saveBackup,
   loadBackup,
 } from '@/lib/utils'
@@ -164,6 +170,30 @@ const INTRO_SAMPLE_PLAN: PlanResult = {
 export default function App() {
   const [todos, setTodos] = useState<Todo[]>(loadTodos)
   const [input, setInput] = useState('')
+  // タスク追加の詳細オプション
+  const [addDueDateYear, setAddDueDateYear] = useState('')
+  const [addDueDateMonth, setAddDueDateMonth] = useState('')
+  const [addDueDateDay, setAddDueDateDay] = useState('')
+  const [addDueTime, setAddDueTime] = useState('23:59') // HH:mm形式
+  const dueDateMonthRef = useRef<HTMLInputElement>(null)
+  const dueDateDayRef = useRef<HTMLInputElement>(null)
+
+  // 日付が有効かどうか
+  const hasValidDueDate = addDueDateYear.length === 4 && addDueDateMonth.length >= 1 && addDueDateDay.length >= 1
+  const addDueDate = hasValidDueDate
+    ? `${addDueDateYear}-${addDueDateMonth.padStart(2, '0')}-${addDueDateDay.padStart(2, '0')}`
+    : ''
+
+  const clearAddDueDate = () => {
+    setAddDueDateYear('')
+    setAddDueDateMonth('')
+    setAddDueDateDay('')
+  }
+  const [addRecurrenceType, setAddRecurrenceType] = useState<'none' | 'daily' | 'weekly' | 'monthly' | 'yearly'>('none')
+  const [addWeeklyDay, setAddWeeklyDay] = useState<number>(1) // 0=日曜, 1=月曜, ...
+  const [addMonthlyDay, setAddMonthlyDay] = useState<number>(1) // 1〜31
+  const [addYearlyMonth, setAddYearlyMonth] = useState<number>(1) // 1〜12
+  const [addYearlyDay, setAddYearlyDay] = useState<number>(1) // 1〜31
   const [filter, setFilter] = useState<'all' | 'active' | 'completed'>('all')
   const [labelFilter, setLabelFilter] = useState<string | null>(null)
   const [customFilters, setCustomFilters] = useState<CustomFilter[]>(loadCustomFilters)
@@ -175,6 +205,7 @@ export default function App() {
   const [newFilterOverdue, setNewFilterOverdue] = useState(false)
   const [newFilterHasRecurrence, setNewFilterHasRecurrence] = useState(false)
   const [sections, setSections] = useState<Section[]>(loadSections)
+  const [savedLabels, setSavedLabels] = useState<string[]>(loadLabels) // タスク削除後も保持されるラベル
   const [viewMode, setViewMode] = useState<'list' | 'board' | 'upcoming'>(loadViewMode)
   const [showSectionModal, setShowSectionModal] = useState(false)
   const [newSectionName, setNewSectionName] = useState('')
@@ -193,15 +224,11 @@ export default function App() {
   const [editText, setEditText] = useState('')
   const [editingSubtask, setEditingSubtask] = useState<number | null>(null)
   const [currentTimeframe, setCurrentTimeframe] = useState<ViewTimeframe>('today')
-  const [showReminderModal, setShowReminderModal] = useState(false)
-  const [reminderTodoId, setReminderTodoId] = useState<string | null>(null)
-  const [reminderDateTime, setReminderDateTime] = useState('')
-  const [reminderType, setReminderType] = useState<'once' | 'weekly'>('once')
-  const [weeklyDays, setWeeklyDays] = useState<number[]>([])
-  const [weeklyTime, setWeeklyTime] = useState('09:00')
   const [showDueDateModal, setShowDueDateModal] = useState(false)
   const [dueDateTodoId, setDueDateTodoId] = useState<string | null>(null)
   const [dueDateInput, setDueDateInput] = useState('')
+  const [dueDateNotifyEnabled, setDueDateNotifyEnabled] = useState(true)
+  const [dueDateNotifyBefore, setDueDateNotifyBefore] = useState(0) // 期日の何分前に通知するか
   const [showHelp, setShowHelp] = useState(false)
   const [showIntro, setShowIntro] = useState(() => !localStorage.getItem(INTRO_SEEN_KEY))
   const [introStep, setIntroStep] = useState(0)
@@ -249,6 +276,8 @@ export default function App() {
   const [editingPlanTaskTitle, setEditingPlanTaskTitle] = useState('')
   const [planLabel, setPlanLabel] = useState('')
   const [planProjectId, setPlanProjectId] = useState<string | null>(null)
+  const [showNewProjectInPlan, setShowNewProjectInPlan] = useState(false)
+  const [newProjectNameInPlan, setNewProjectNameInPlan] = useState('')
   // 削除確認関連
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
@@ -282,12 +311,7 @@ export default function App() {
       // 追加フィールド（統合リマインダー用）
       parentId: todo.parentId,
       completed: todo.completed,
-      reminder: todo.reminder,
-      reminderSent: todo.reminderSent,
-      weeklyReminder: todo.weeklyReminder,
-      dueDateNotified: todo.dueDateNotified,
-      followUpCount: todo.followUpCount,
-      lastNotifiedAt: todo.lastNotifiedAt,
+      dueDateNotification: todo.dueDateNotification,
       timeframe: todo.timeframe,
     }))
   }
@@ -298,17 +322,10 @@ export default function App() {
       const updated = prevTodos.map(todo => {
         const result = results.find(r => r.taskId === todo.id)
         if (result) {
-          // ReminderTaskからTodoへの安全なマッピング
-          const { weeklyReminder, ...otherUpdates } = result.updates
           const todoUpdates: Partial<Todo> = {}
-          // 共通フィールドのコピー
-          if (otherUpdates.reminderSent !== undefined) todoUpdates.reminderSent = otherUpdates.reminderSent
-          if (otherUpdates.dueDateNotified !== undefined) todoUpdates.dueDateNotified = otherUpdates.dueDateNotified
-          if (otherUpdates.followUpCount !== undefined) todoUpdates.followUpCount = otherUpdates.followUpCount
-          if (otherUpdates.lastNotifiedAt !== undefined) todoUpdates.lastNotifiedAt = otherUpdates.lastNotifiedAt
-          // weeklyReminderは型を保証
-          if (weeklyReminder !== undefined) {
-            todoUpdates.weeklyReminder = weeklyReminder as Todo['weeklyReminder']
+          // dueDateNotificationの更新
+          if (result.updates.dueDateNotification !== undefined) {
+            todoUpdates.dueDateNotification = result.updates.dueDateNotification as Todo['dueDateNotification']
           }
           return { ...todo, ...todoUpdates }
         }
@@ -394,6 +411,18 @@ export default function App() {
               today.setHours(23, 59, 59, 999)
               dueDate = today.getTime()
             }
+            // リマインダーからdueDateNotificationへのマイグレーション
+            let dueDateNotification = t.dueDateNotification ?? null
+            if (!dueDateNotification && dueDate) {
+              // 旧形式のreminder/weeklyReminderがある場合は通知を有効に
+              const hasOldReminder = t.reminder || t.weeklyReminder
+              dueDateNotification = {
+                enabled: !!hasOldReminder || !t.dueDateNotified,
+                notifyBefore: 0,
+                notifiedAt: t.lastNotifiedAt ?? null,
+                followUpCount: t.followUpCount ?? 0
+              }
+            }
             return {
               id: t.id,
               text: t.text,
@@ -402,14 +431,9 @@ export default function App() {
               createdAt: t.createdAt,
               parentId: t.parentId ?? null,
               priority,
-              reminder: t.reminder ?? null,
-              reminderSent: t.reminderSent ?? false,
-              weeklyReminder: t.weeklyReminder,
-              followUpCount: t.followUpCount ?? 0,
-              lastNotifiedAt: t.lastNotifiedAt ?? null,
               timeframe: t.timeframe ?? 'today',
               dueDate,
-              dueDateNotified: t.dueDateNotified ?? false,
+              dueDateNotification,
               labels,
               recurrence: t.recurrence ?? null,
               description: t.description ?? '',
@@ -463,7 +487,6 @@ export default function App() {
       if (e.key === 'Escape') {
         setShowSettings(false)
         setShowDecomposeModal(false)
-        setShowReminderModal(false)
         setShowDueDateModal(false)
         setShowLabelModal(false)
         setShowHelp(false)
@@ -541,6 +564,17 @@ export default function App() {
         today.setHours(23, 59, 59, 999)
         dueDate = today.getTime()
       }
+      // リマインダーからdueDateNotificationへのマイグレーション
+      let dueDateNotification = t.dueDateNotification ?? null
+      if (!dueDateNotification && dueDate) {
+        const hasOldReminder = t.reminder || t.weeklyReminder
+        dueDateNotification = {
+          enabled: !!hasOldReminder || !t.dueDateNotified,
+          notifyBefore: 0,
+          notifiedAt: t.lastNotifiedAt ?? null,
+          followUpCount: t.followUpCount ?? 0
+        }
+      }
       return {
         id: t.id,
         text: t.text,
@@ -549,14 +583,9 @@ export default function App() {
         createdAt: t.createdAt,
         parentId: t.parentId ?? null,
         priority,
-        reminder: t.reminder ?? null,
-        reminderSent: t.reminderSent ?? false,
-        weeklyReminder: t.weeklyReminder,
-        followUpCount: t.followUpCount ?? 0,
-        lastNotifiedAt: t.lastNotifiedAt ?? null,
         timeframe: t.timeframe ?? 'today',
         dueDate,
-        dueDateNotified: t.dueDateNotified ?? false,
+        dueDateNotification,
         labels,
         recurrence: t.recurrence ?? null,
         description: t.description ?? '',
@@ -595,19 +624,100 @@ export default function App() {
       // 自然言語パーサーで入力を解析（GPT APIを使用）
       const parsed = await parseNaturalLanguage(rawText)
 
-      // 期日が必須
-      if (!parsed.dueDate) {
-        setDecomposeError('期日を指定してください（例：「明日」「来週月曜」「1/20」など）')
+      // UIから設定された繰り返しを優先、なければパース結果を使用
+      let finalRecurrence: RecurrencePattern | null = parsed.recurrence
+      if (addRecurrenceType !== 'none') {
+        finalRecurrence = { type: addRecurrenceType, interval: 1 }
+      }
+
+      // UIから設定された期限を優先、なければパース結果を使用
+      let finalDueDate: number | null = parsed.dueDate
+      if (addDueDate && addDueDate.match(/^\d{2}:\d{2}$/)) {
+        // 繰り返しタスクの場合は時間のみ（HH:MM形式）
+        const [hours, minutes] = addDueDate.split(':').map(Number)
+
+        if (finalRecurrence?.type === 'daily') {
+          // 毎日タスク：今日の日付と組み合わせる
+          const today = new Date()
+          today.setHours(hours, minutes, 0, 0)
+          if (today.getTime() < Date.now()) {
+            today.setDate(today.getDate() + 1)
+          }
+          finalDueDate = today.getTime()
+        } else if (finalRecurrence?.type === 'weekly') {
+          // 毎週タスク：曜日と時間から次の該当日を計算
+          const targetDay = addWeeklyDay
+          const now = new Date()
+          const currentDay = now.getDay()
+          let daysUntilTarget = targetDay - currentDay
+          if (daysUntilTarget < 0) {
+            daysUntilTarget += 7
+          } else if (daysUntilTarget === 0) {
+            const todayWithTime = new Date()
+            todayWithTime.setHours(hours, minutes, 0, 0)
+            if (todayWithTime.getTime() < Date.now()) {
+              daysUntilTarget = 7
+            }
+          }
+          const targetDate = new Date()
+          targetDate.setDate(now.getDate() + daysUntilTarget)
+          targetDate.setHours(hours, minutes, 0, 0)
+          finalDueDate = targetDate.getTime()
+        } else if (finalRecurrence?.type === 'monthly') {
+          // 毎月タスク：指定日と時間から次の該当日を計算
+          const now = new Date()
+          const targetDate = new Date(now.getFullYear(), now.getMonth(), addMonthlyDay, hours, minutes, 0, 0)
+          // 今月の指定日が過ぎていたら来月
+          if (targetDate.getTime() < Date.now()) {
+            targetDate.setMonth(targetDate.getMonth() + 1)
+          }
+          finalDueDate = targetDate.getTime()
+        } else if (finalRecurrence?.type === 'yearly') {
+          // 毎年タスク：指定月日と時間から次の該当日を計算
+          const now = new Date()
+          const targetDate = new Date(now.getFullYear(), addYearlyMonth - 1, addYearlyDay, hours, minutes, 0, 0)
+          // 今年の指定日が過ぎていたら来年
+          if (targetDate.getTime() < Date.now()) {
+            targetDate.setFullYear(targetDate.getFullYear() + 1)
+          }
+          finalDueDate = targetDate.getTime()
+        }
+      } else if (addDueDate) {
+        // 通常タスク：date + time形式
+        const [hours, minutes] = addDueTime.split(':').map(Number)
+        const dateObj = new Date(addDueDate)
+        dateObj.setHours(hours, minutes, 0, 0)
+        finalDueDate = dateObj.getTime()
+      }
+
+      // 期日が必須（UIでもテキストでも指定がない場合）
+      if (!finalDueDate) {
+        setDecomposeError('期日を指定してください（例：「明日」「来週月曜」「1/20」など、または下の期限設定を使用）')
         setInput(rawText)
         setIsAddingTodo(false)
         return
       }
 
-      // タイムフレームの決定（パースされたものか現在のものを使用、'completed'/'plan'/'archived'の場合は'today'にフォールバック）
+      // タイムフレームの決定（year含む通常の期間タブはそのまま使用、特殊タブはtodayにフォールバック）
       const effectiveTimeframe: Timeframe = (currentTimeframe === 'completed' || currentTimeframe === 'plan' || currentTimeframe === 'archived') ? 'today' : currentTimeframe
-      const timeframe = parsed.dueDate ? parsed.timeframe : effectiveTimeframe
-      const config = getAutoReminderConfig(timeframe)
-      const weeklyReminder = { days: config.days, time: config.times[0] || '12:00', times: config.times, lastSent: null }
+      // 繰り返しタイプに応じたタイムフレーム
+      let timeframe: Timeframe = effectiveTimeframe
+      if (finalDueDate) {
+        const now = new Date()
+        const due = new Date(finalDueDate)
+        const diffDays = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+        if (diffDays <= 1) timeframe = 'today'
+        else if (diffDays <= 7) timeframe = 'week'
+        else if (diffDays <= 31) timeframe = 'month'
+        else timeframe = 'year'
+      }
+      // 繰り返しタスクの場合は適切なタイムフレームに
+      if (finalRecurrence) {
+        if (finalRecurrence.type === 'daily') timeframe = 'today'
+        else if (finalRecurrence.type === 'weekly') timeframe = 'week'
+        else if (finalRecurrence.type === 'monthly') timeframe = 'month'
+        else if (finalRecurrence.type === 'yearly') timeframe = 'year'
+      }
 
       updateTodosWithHistory(prev => [{
         id: crypto.randomUUID(),
@@ -617,16 +727,11 @@ export default function App() {
         createdAt: Date.now(),
         parentId: null,
         priority: parsed.priority,
-        reminder: null,
-        reminderSent: false,
-        weeklyReminder,
-        followUpCount: 0,
-        lastNotifiedAt: null,
         timeframe,
-        dueDate: parsed.dueDate,
-        dueDateNotified: false,
+        dueDate: finalDueDate,
+        dueDateNotification: finalDueDate ? { enabled: true, notifyBefore: 0, notifiedAt: null, followUpCount: 0 } : null,
         labels: parsed.labels,
-        recurrence: parsed.recurrence,
+        recurrence: finalRecurrence,
         description: '',
         sectionId: null,
         order: prev.length,
@@ -637,6 +742,23 @@ export default function App() {
         archived: false,
         archivedAt: null,
       }, ...prev])
+
+      // 新しいラベルをsavedLabelsに保存
+      const newLabels = parsed.labels.filter(l => !savedLabels.includes(l))
+      if (newLabels.length > 0) {
+        const updatedSavedLabels = [...savedLabels, ...newLabels].sort()
+        setSavedLabels(updatedSavedLabels)
+        saveLabels(updatedSavedLabels)
+      }
+
+      // UIオプションをリセット
+      clearAddDueDate()
+      setAddDueTime('23:59')
+      setAddRecurrenceType('none')
+      setAddWeeklyDay(1)
+      setAddMonthlyDay(1)
+      setAddYearlyMonth(1)
+      setAddYearlyDay(1)
     } catch (error) {
       console.error('Failed to add todo:', error)
       // エラー時は元の入力を復元
@@ -661,18 +783,19 @@ export default function App() {
   }
 
   // カルマ更新ヘルパー（タスク完了時）
-  const updateKarmaOnComplete = (taskPriority: Priority) => {
+  const updateKarmaOnComplete = (taskPriority: Priority, estimatedMinutes: number | null = null) => {
     setKarma(prev => {
       const today = new Date().toISOString().slice(0, 10)
       const isNewDay = prev.lastCompletedDate !== today
       const newStreak = isNewDay ? (prev.lastCompletedDate === new Date(Date.now() - 86400000).toISOString().slice(0, 10) ? prev.streak + 1 : 1) : prev.streak
 
       // 優先度に応じたポイント (P1=10, P2=7, P3=5, P4=3)
-      const pointsMap: Record<Priority, number> = { 1: 10, 2: 7, 3: 5, 4: 3 }
-      const basePoints = pointsMap[taskPriority]
-      // ストリークボーナス
+      const basePoints = PRIORITY_POINTS[taskPriority]
+      // ストリークボーナス（最大7）
       const streakBonus = Math.min(newStreak, 7)
-      const totalPointsEarned = basePoints + streakBonus
+      // 困難度ボーナス（所要時間に応じて）
+      const difficultyBonus = getDifficultyBonus(estimatedMinutes)
+      const totalPointsEarned = basePoints + streakBonus + difficultyBonus
 
       const newTotalPoints = prev.totalPoints + totalPointsEarned
       const newLevel = calculateLevel(newTotalPoints)
@@ -692,14 +815,15 @@ export default function App() {
   }
 
   // カルマ更新ヘルパー（タスク完了取り消し時）
-  const updateKarmaOnUncomplete = (taskPriority: Priority) => {
+  const updateKarmaOnUncomplete = (taskPriority: Priority, estimatedMinutes: number | null = null) => {
     setKarma(prev => {
-      // 優先度に応じたポイント (P1=10, P2=7, P3=5, P4=3)
-      const pointsMap: Record<Priority, number> = { 1: 10, 2: 7, 3: 5, 4: 3 }
-      const basePoints = pointsMap[taskPriority]
+      // 優先度に応じたポイント
+      const basePoints = PRIORITY_POINTS[taskPriority]
       // ストリークボーナスは完了時と同じ計算（最大7）
       const streakBonus = Math.min(prev.streak, 7)
-      const totalPointsToRemove = basePoints + streakBonus
+      // 困難度ボーナス
+      const difficultyBonus = getDifficultyBonus(estimatedMinutes)
+      const totalPointsToRemove = basePoints + streakBonus + difficultyBonus
 
       const newTotalPoints = Math.max(0, prev.totalPoints - totalPointsToRemove)
       const newLevel = calculateLevel(newTotalPoints)
@@ -725,8 +849,8 @@ export default function App() {
 
       // カルマとアクティビティログの更新
       if (newCompleted) {
-        // 完了時：ポイント付与
-        updateKarmaOnComplete(target.priority)
+        // 完了時：ポイント付与（所要時間ボーナス含む）
+        updateKarmaOnComplete(target.priority, target.estimatedMinutes)
         addActivityLog({
           type: 'task_completed',
           taskId: target.id,
@@ -734,7 +858,7 @@ export default function App() {
         })
       } else if (target.karmaAwarded) {
         // 完了取り消し時：ポイント減点（獲得済みの場合のみ）
-        updateKarmaOnUncomplete(target.priority)
+        updateKarmaOnUncomplete(target.priority, target.estimatedMinutes)
       }
       const getDescendantIds = (parentId: string): string[] => {
         const children = prev.filter(t => t.parentId === parentId)
@@ -744,7 +868,15 @@ export default function App() {
 
       // まず対象タスクと子タスクを更新（完了/未完了に応じてkarmaAwardedとcompletedAtを更新）
       const now = Date.now()
-      let updated = prev.map(todo => idsToToggle.has(todo.id) ? { ...todo, completed: newCompleted, completedAt: newCompleted ? now : null, followUpCount: newCompleted ? 0 : todo.followUpCount, lastNotifiedAt: newCompleted ? null : todo.lastNotifiedAt, karmaAwarded: newCompleted } : todo)
+      let updated = prev.map(todo => {
+        if (!idsToToggle.has(todo.id)) return todo
+        const updatedTodo = { ...todo, completed: newCompleted, completedAt: newCompleted ? now : null, karmaAwarded: newCompleted }
+        // 通知設定をリセット
+        if (newCompleted && updatedTodo.dueDateNotification) {
+          updatedTodo.dueDateNotification = { ...updatedTodo.dueDateNotification, followUpCount: 0, notifiedAt: null }
+        }
+        return updatedTodo
+      })
 
       // 子タスクを完了した場合、親タスクのすべての子が完了したか確認
       if (newCompleted && target.parentId) {
@@ -753,7 +885,14 @@ export default function App() {
           const siblings = updated.filter(t => t.parentId === parentId)
           const allSiblingsCompleted = siblings.length > 0 && siblings.every(t => t.completed)
           if (allSiblingsCompleted) {
-            updated = updated.map(t => t.id === parentId ? { ...t, completed: true, completedAt: now, followUpCount: 0, lastNotifiedAt: null, karmaAwarded: true } : t)
+            updated = updated.map(t => {
+              if (t.id !== parentId) return t
+              const parentTodo = { ...t, completed: true, completedAt: now, karmaAwarded: true }
+              if (parentTodo.dueDateNotification) {
+                parentTodo.dueDateNotification = { ...parentTodo.dueDateNotification, followUpCount: 0, notifiedAt: null }
+              }
+              return parentTodo
+            })
             // 親の親も確認
             const parent = updated.find(t => t.id === parentId)
             if (parent?.parentId) {
@@ -767,8 +906,6 @@ export default function App() {
       // 繰り返しタスクを完了した場合、次回のタスクを自動生成
       if (newCompleted && target.recurrence && !target.parentId) {
         const nextDate = getNextRecurrenceDate(target.recurrence, new Date())
-        const config = getAutoReminderConfig(target.timeframe)
-        const weeklyReminder = { days: config.days, time: config.times[0] || '12:00', times: config.times, lastSent: null }
 
         const nextTodo: Todo = {
           id: crypto.randomUUID(),
@@ -778,14 +915,9 @@ export default function App() {
           createdAt: Date.now(),
           parentId: null,
           priority: target.priority,
-          reminder: null,
-          reminderSent: false,
-          weeklyReminder,
-          followUpCount: 0,
-          lastNotifiedAt: null,
           timeframe: target.timeframe,
           dueDate: nextDate.getTime(),
-          dueDateNotified: false,
+          dueDateNotification: { enabled: true, notifyBefore: 0, notifiedAt: null, followUpCount: 0 },
           labels: target.labels,
           recurrence: target.recurrence,
           description: target.description,
@@ -980,13 +1112,14 @@ export default function App() {
   const cycleTimeframe = (id: string) => {
     const todo = todos.find(t => t.id === id)
     if (!todo) return
-    const next: Timeframe = todo.timeframe === 'today' ? 'week' : todo.timeframe === 'week' ? 'month' : 'today'
+    const next: Timeframe =
+      todo.timeframe === 'today' ? 'week' :
+      todo.timeframe === 'week' ? 'month' :
+      todo.timeframe === 'month' ? 'year' : 'today'
 
     updateTodosWithHistory(prev => prev.map(t => {
       if (t.id !== id) return t
-      const config = getAutoReminderConfig(next)
-      const weeklyReminder = { days: config.days, time: config.times[0] || '12:00', times: config.times, lastSent: null }
-      return { ...t, timeframe: next, reminder: null, reminderSent: false, weeklyReminder, followUpCount: 0, lastNotifiedAt: null }
+      return { ...t, timeframe: next }
     }))
 
     // ビューをインボックスに保ち、タイムフレームを更新
@@ -995,7 +1128,10 @@ export default function App() {
     }
   }
 
-  const timeframeLabel = (tf: Timeframe) => tf === 'today' ? '今日' : tf === 'week' ? '週' : '月'
+  const timeframeLabel = (tf: Timeframe) =>
+    tf === 'today' ? '今日' :
+    tf === 'week' ? '週' :
+    tf === 'month' ? '月' : '年'
 
   const handleSaveSettings = () => {
     // 設定を保存（KanaeReminderSettingsが全てのAPIキーを管理）
@@ -1102,7 +1238,6 @@ export default function App() {
     if (selected.length === 0) return
     const parentId = decomposingTodo?.id ?? null
     const parentTimeframe = decomposingTodo?.timeframe ?? 'today'
-    const autoReminder = getAutoReminderConfig(parentTimeframe)
     const mapPriority = (p: string | undefined): Priority => {
       if (p === 'high') return 1
       if (p === 'medium') return 2
@@ -1117,14 +1252,9 @@ export default function App() {
       createdAt: Date.now(),
       parentId,
       priority: mapPriority(st.priority),
-      reminder: null,
-      reminderSent: false,
-      weeklyReminder: { days: autoReminder.days, time: autoReminder.times[0], times: autoReminder.times, lastSent: null },
-      followUpCount: 0,
-      lastNotifiedAt: null,
       timeframe: parentTimeframe,
       dueDate: null,
-      dueDateNotified: false,
+      dueDateNotification: null,
       labels: [],
       recurrence: null,
       description: '',
@@ -1222,8 +1352,30 @@ export default function App() {
     return children.flatMap(child => [child, ...buildTree(child.id)])
   }
 
-  // 全ラベルを収集
-  const allLabels = [...new Set(todos.flatMap(t => t.labels || []))].sort()
+  // 全ラベルを収集（savedLabelsとtodosから両方マージ）
+  const allLabels = [...new Set([...savedLabels, ...todos.flatMap(t => t.labels || [])])].sort()
+
+  // 「未設定」ラベルの重複を回避して一意な名前を生成
+  const getUniqueLabelName = (baseName: string): string => {
+    if (!allLabels.includes(baseName)) return baseName
+    let counter = 1
+    while (allLabels.includes(`${baseName} ${counter}`)) {
+      counter++
+    }
+    return `${baseName} ${counter}`
+  }
+
+  // 繰り返しタスクがそのタブに表示されるべきかチェック
+  const shouldShowRecurringInTimeframe = (todo: Todo, timeframe: Timeframe): boolean => {
+    if (!todo.recurrence) return false
+    const { type } = todo.recurrence
+    // 毎日 → 今日タブ、毎週 → 1週間タブ、毎月 → 1ヶ月タブ、毎年 → 1年タブ
+    if (type === 'daily' && timeframe === 'today') return true
+    if (type === 'weekly' && timeframe === 'week') return true
+    if (type === 'monthly' && timeframe === 'month') return true
+    if (type === 'yearly' && timeframe === 'year') return true
+    return false
+  }
 
   const filteredTodos = todos.filter(todo => {
     // アーカイブタブの場合はアーカイブ済みのみ表示
@@ -1241,10 +1393,19 @@ export default function App() {
         if (!todo.completed) return false
       } else if (currentTimeframe !== 'plan') {
         // 通常の期間タブ: currentTimeframeでフィルター
-        if (todo.parentId === null && todo.timeframe !== currentTimeframe) return false
+        // 繰り返しタスクは対応するタブにも表示
+        if (todo.parentId === null) {
+          const matchesTimeframe = todo.timeframe === currentTimeframe
+          const matchesRecurrence = shouldShowRecurringInTimeframe(todo, currentTimeframe as Timeframe)
+          if (!matchesTimeframe && !matchesRecurrence) return false
+        }
         if (todo.parentId !== null) {
           const parent = todos.find(t => t.id === todo.parentId)
-          if (parent && parent.timeframe !== currentTimeframe) return false
+          if (parent) {
+            const matchesTimeframe = parent.timeframe === currentTimeframe
+            const matchesRecurrence = shouldShowRecurringInTimeframe(parent, currentTimeframe as Timeframe)
+            if (!matchesTimeframe && !matchesRecurrence) return false
+          }
         }
       }
       // ラベルビューの場合は追加でラベルフィルター
@@ -1400,6 +1561,12 @@ export default function App() {
       if (t.labels.includes(label)) return t // 重複は追加しない
       return { ...t, labels: [...t.labels, label] }
     }))
+    // savedLabelsにも追加（タスク削除後も保持）
+    if (!savedLabels.includes(label)) {
+      const newSavedLabels = [...savedLabels, label].sort()
+      setSavedLabels(newSavedLabels)
+      saveLabels(newSavedLabels)
+    }
     setNewLabelInput('')
   }
 
@@ -1567,108 +1734,36 @@ export default function App() {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 
-  const openReminderModal = (todoId: string) => {
-    const todo = todos.find(t => t.id === todoId)
-    if (todo?.weeklyReminder) {
-      setReminderType('weekly')
-      setWeeklyDays(todo.weeklyReminder.days)
-      setWeeklyTime(todo.weeklyReminder.time)
-      setReminderDateTime('')
-    } else if (todo?.reminder) {
-      setReminderType('once')
-      const date = new Date(todo.reminder)
-      setReminderDateTime(date.toISOString().slice(0, 16))
-      setWeeklyDays([])
-      setWeeklyTime('09:00')
-    } else {
-      setReminderType('once')
-      // 期日がある場合は12時間前をデフォルトに
-      if (todo?.dueDate) {
-        const defaultReminder = new Date(todo.dueDate - 12 * 60 * 60 * 1000)
-        setReminderDateTime(defaultReminder.toISOString().slice(0, 16))
-      } else {
-        const now = new Date()
-        now.setHours(now.getHours() + 1, 0, 0, 0)
-        setReminderDateTime(now.toISOString().slice(0, 16))
-      }
-      setWeeklyDays([])
-      setWeeklyTime('09:00')
-    }
-    setReminderTodoId(todoId)
-    setShowReminderModal(true)
-  }
-
-  const setReminder = () => {
-    if (!reminderTodoId) return
-    if (reminderType === 'once') {
-      if (!reminderDateTime) return
-      const timestamp = new Date(reminderDateTime).getTime()
-      updateTodosWithHistory(prev => prev.map(todo =>
-        todo.id === reminderTodoId ? { ...todo, reminder: timestamp, reminderSent: false, weeklyReminder: null } : todo
-      ))
-    } else {
-      if (weeklyDays.length === 0) return
-      updateTodosWithHistory(prev => prev.map(todo =>
-        todo.id === reminderTodoId ? { ...todo, reminder: null, reminderSent: false, weeklyReminder: { days: weeklyDays, time: weeklyTime, times: [weeklyTime], lastSent: null } } : todo
-      ))
-    }
-    setShowReminderModal(false)
-    setReminderTodoId(null)
-    setReminderDateTime('')
-    setWeeklyDays([])
-    setWeeklyTime('09:00')
-  }
-
-  const clearReminder = (todoId: string) => {
-    updateTodosWithHistory(prev => prev.map(todo =>
-      todo.id === todoId ? { ...todo, reminder: null, reminderSent: false, weeklyReminder: null } : todo
-    ))
-    setShowReminderModal(false)
-    setReminderTodoId(null)
-    setWeeklyDays([])
-    setWeeklyTime('09:00')
-  }
-
-  const toggleWeeklyDay = (day: number) => {
-    setWeeklyDays(prev => prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day].sort())
-  }
-
-  const dayNames = ['日', '月', '火', '水', '木', '金', '土']
-
-  const formatReminder = (timestamp: number) => {
-    const date = new Date(timestamp)
-    const month = date.getMonth() + 1
-    const day = date.getDate()
-    const hours = date.getHours().toString().padStart(2, '0')
-    const minutes = date.getMinutes().toString().padStart(2, '0')
-    return `${month}/${day} ${hours}:${minutes}`
-  }
-
-  const formatWeeklyReminder = (weekly: { days: number[], time: string }) => {
-    const daysStr = weekly.days.map(d => dayNames[d]).join('')
-    return `毎${daysStr} ${weekly.time}`
+  const formatLocalDateTime = (date: Date): string => {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hours = String(date.getHours()).padStart(2, '0')
+    const minutes = String(date.getMinutes()).padStart(2, '0')
+    return `${year}-${month}-${day}T${hours}:${minutes}`
   }
 
   const openDueDateModal = (todoId: string) => {
     const todo = todos.find(t => t.id === todoId)
     if (todo?.dueDate) {
       const date = new Date(todo.dueDate)
-      // Format as datetime-local value (YYYY-MM-DDTHH:MM)
-      const year = date.getFullYear()
-      const month = String(date.getMonth() + 1).padStart(2, '0')
-      const day = String(date.getDate()).padStart(2, '0')
-      const hours = String(date.getHours()).padStart(2, '0')
-      const minutes = String(date.getMinutes()).padStart(2, '0')
-      setDueDateInput(`${year}-${month}-${day}T${hours}:${minutes}`)
+      setDueDateInput(formatLocalDateTime(date))
+      // 通知設定を読み込み
+      if (todo.dueDateNotification) {
+        setDueDateNotifyEnabled(todo.dueDateNotification.enabled)
+        setDueDateNotifyBefore(todo.dueDateNotification.notifyBefore)
+      } else {
+        setDueDateNotifyEnabled(true)
+        setDueDateNotifyBefore(0)
+      }
     } else {
       // Default to tomorrow at 18:00
       const tomorrow = new Date()
       tomorrow.setDate(tomorrow.getDate() + 1)
       tomorrow.setHours(18, 0, 0, 0)
-      const year = tomorrow.getFullYear()
-      const month = String(tomorrow.getMonth() + 1).padStart(2, '0')
-      const day = String(tomorrow.getDate()).padStart(2, '0')
-      setDueDateInput(`${year}-${month}-${day}T18:00`)
+      setDueDateInput(formatLocalDateTime(tomorrow))
+      setDueDateNotifyEnabled(true)
+      setDueDateNotifyBefore(0)
     }
     setDueDateTodoId(todoId)
     setShowDueDateModal(true)
@@ -1677,8 +1772,22 @@ export default function App() {
   const setDueDate = () => {
     if (!dueDateTodoId || !dueDateInput) return
     const timestamp = new Date(dueDateInput).getTime()
+    const now = Date.now()
+    // 通知時刻を計算（期日 - notifyBefore分）
+    const notifyTime = timestamp - dueDateNotifyBefore * 60 * 1000
+    // 通知時刻が現在より前の場合は通知済みとして扱う（即時通知を防ぐ）
+    const notifiedAt = notifyTime <= now ? now : null
     updateTodosWithHistory(prev => prev.map(todo =>
-      todo.id === dueDateTodoId ? { ...todo, dueDate: timestamp, dueDateNotified: false } : todo
+      todo.id === dueDateTodoId ? {
+        ...todo,
+        dueDate: timestamp,
+        dueDateNotification: {
+          enabled: dueDateNotifyEnabled,
+          notifyBefore: dueDateNotifyBefore,
+          notifiedAt,
+          followUpCount: 0
+        }
+      } : todo
     ))
     setShowDueDateModal(false)
     setDueDateTodoId(null)
@@ -1687,19 +1796,41 @@ export default function App() {
 
   const clearDueDate = (todoId: string) => {
     updateTodosWithHistory(prev => prev.map(todo =>
-      todo.id === todoId ? { ...todo, dueDate: null, dueDateNotified: false } : todo
+      todo.id === todoId ? { ...todo, dueDate: null, dueDateNotification: null } : todo
     ))
     setShowDueDateModal(false)
     setDueDateTodoId(null)
     setDueDateInput('')
   }
 
-  const formatDueDate = (timestamp: number) => {
+  const formatDueDate = (timestamp: number, recurrence?: RecurrencePattern | null) => {
     const date = new Date(timestamp)
     const month = date.getMonth() + 1
     const day = date.getDate()
     const hours = date.getHours().toString().padStart(2, '0')
     const minutes = date.getMinutes().toString().padStart(2, '0')
+    const time = `${hours}:${minutes}`
+
+    // 繰り返しタスクの場合、タイプに応じた表示形式
+    if (recurrence) {
+      const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+      switch (recurrence.type) {
+        case 'daily':
+          // 毎日: 時刻のみ
+          return time
+        case 'weekly':
+          // 毎週: 曜日と時刻
+          return `${dayNames[date.getDay()]}曜 ${time}`
+        case 'monthly':
+          // 毎月: 日付と時刻
+          return `${day}日 ${time}`
+        case 'yearly':
+          // 毎年: 月と日付と時刻
+          return `${month}月${day}日 ${time}`
+      }
+    }
+
+    // 通常のタスク: 月/日 時:分
     return `${month}/${day} ${hours}:${minutes}`
   }
 
@@ -1990,7 +2121,7 @@ END:VCALENDAR`
     },
     {
       title: '期間で整理',
-      content: 'タスクは<hl>今日・1週間・1ヶ月・計画</hl>の4つで管理。\n<hl>「計画」タブ</hl>では目標を入力するとAIが計画を自動生成します。',
+      content: 'タスクは<hl>今日・1週間・1ヶ月・1年・計画</hl>の5つで管理。\n<hl>「計画」タブ</hl>では目標を入力するとAIが計画を自動生成します。',
       icon: '📅',
       target: '.timeframe-tabs',
       btnTarget: null
@@ -2042,14 +2173,14 @@ END:VCALENDAR`
           <button className="sidebar-toggle" onClick={() => setSidebarCollapsed(!sidebarCollapsed)} title={sidebarCollapsed ? '展開' : '折りたたむ'}>
             {sidebarCollapsed ? '→' : '←'}
           </button>
-          {!sidebarCollapsed && <h1 className="app-logo">Calm Todo</h1>}
+          {!sidebarCollapsed && <h1 className="app-logo" onClick={() => { setActiveView('inbox'); setCurrentTimeframe('today'); setSelectedLabel(null); setLabelFilter(null); }} style={{ cursor: 'pointer' }}>Calm Todo</h1>}
         </div>
 
         {!sidebarCollapsed && (
           <>
             {/* ナビゲーション（固定） */}
             <nav className="sidebar-nav">
-              <button className={'nav-item' + (activeView === 'inbox' ? ' active' : '')} onClick={() => { setActiveView('inbox'); setSelectedLabel(null); setLabelFilter(null); }}>
+              <button className={'nav-item' + (activeView === 'inbox' ? ' active' : '')} onClick={() => { setActiveView('inbox'); setCurrentTimeframe('today'); setSelectedLabel(null); setLabelFilter(null); }}>
                 <span className="nav-icon">📥</span>
                 <span className="nav-label">タスク</span>
                 <span className="nav-count">{todos.filter(t => t.parentId === null && !t.completed).length}</span>
@@ -2230,6 +2361,9 @@ END:VCALENDAR`
               <button className={'timeframe-tab' + (currentTimeframe === 'month' ? ' active' : '')} onClick={() => setCurrentTimeframe('month')}>
                 1ヶ月
               </button>
+              <button className={'timeframe-tab' + (currentTimeframe === 'year' ? ' active' : '')} onClick={() => setCurrentTimeframe('year')}>
+                1年
+              </button>
               <button className={'timeframe-tab completed-tab' + (currentTimeframe === 'completed' ? ' active' : '')} onClick={() => setCurrentTimeframe('completed')}>
                 完了
               </button>
@@ -2249,34 +2383,202 @@ END:VCALENDAR`
         {/* クイック追加（計画タブ以外で表示） */}
         {currentTimeframe !== 'plan' && (
           <div className="quick-add">
-            <button className="quick-add-icon">+</button>
-            <textarea
-              ref={inputRef}
-              className={'quick-add-input' + (isAddingTodo ? ' loading' : '') + (decomposeError ? ' has-error' : '')}
-              placeholder={isAddingTodo ? '追加中...' : 'タスクを追加 (例: 明日 買い物 #仕事 P1) Ctrl+Enterで送信'}
-              value={input}
-              onChange={e => {
-                setInput(e.target.value)
-                if (decomposeError) setDecomposeError('')
-                // 高さを自動調整
-                e.target.style.height = 'auto'
-                e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'
-              }}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && e.ctrlKey && !isAddingTodo) {
-                  e.preventDefault()
-                  addTodo()
-                }
-              }}
-              disabled={isAddingTodo}
-              rows={1}
-            />
+            <div className="quick-add-main">
+              <button className="quick-add-icon">+</button>
+              <textarea
+                ref={inputRef}
+                className={'quick-add-input' + (isAddingTodo ? ' loading' : '') + (decomposeError ? ' has-error' : '')}
+                placeholder={isAddingTodo ? '追加中...' : 'タスクを追加 (例: 明日 買い物 #仕事 P1) Ctrl+Enterで送信'}
+                value={input}
+                onChange={e => {
+                  setInput(e.target.value)
+                  if (decomposeError) setDecomposeError('')
+                  // 高さを自動調整
+                  e.target.style.height = 'auto'
+                  e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && e.ctrlKey && !isAddingTodo) {
+                    e.preventDefault()
+                    addTodo()
+                  }
+                }}
+                disabled={isAddingTodo}
+                rows={1}
+              />
+              {input.trim() && !decomposeError && (
+                <button className="quick-add-submit" onClick={addTodo} disabled={isAddingTodo}>
+                  追加
+                </button>
+              )}
+            </div>
             {decomposeError && <span className="quick-add-error">{decomposeError}</span>}
-            {input.trim() && !decomposeError && (
-              <button className="quick-add-submit" onClick={addTodo} disabled={isAddingTodo}>
-                追加
-              </button>
-            )}
+            <div className="quick-add-options">
+                <div className="quick-add-option">
+                  <label className="quick-add-option-label">🔄 繰り返し</label>
+                  <select
+                    className="quick-add-recurrence"
+                    value={addRecurrenceType}
+                    onChange={e => {
+                      const newType = e.target.value as 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly'
+                      setAddRecurrenceType(newType)
+                      // 繰り返しタイプ変更時に期限をクリア
+                      if (newType !== 'none') {
+                        clearAddDueDate()
+                      }
+                    }}
+                  >
+                    <option value="none">なし</option>
+                    <option value="daily">毎日</option>
+                    <option value="weekly">毎週</option>
+                    <option value="monthly">毎月</option>
+                    <option value="yearly">毎年</option>
+                  </select>
+                </div>
+                {/* 毎週の場合は曜日選択 */}
+                {addRecurrenceType === 'weekly' && (
+                  <div className="quick-add-option">
+                    <label className="quick-add-option-label">📆 曜日</label>
+                    <select
+                      className="quick-add-weekday"
+                      value={addWeeklyDay}
+                      onChange={e => setAddWeeklyDay(Number(e.target.value))}
+                    >
+                      <option value={1}>月曜日</option>
+                      <option value={2}>火曜日</option>
+                      <option value={3}>水曜日</option>
+                      <option value={4}>木曜日</option>
+                      <option value={5}>金曜日</option>
+                      <option value={6}>土曜日</option>
+                      <option value={0}>日曜日</option>
+                    </select>
+                  </div>
+                )}
+                {/* 毎月の場合は日付選択 */}
+                {addRecurrenceType === 'monthly' && (
+                  <div className="quick-add-option">
+                    <label className="quick-add-option-label">📆 日付</label>
+                    <select
+                      className="quick-add-monthday"
+                      value={addMonthlyDay}
+                      onChange={e => setAddMonthlyDay(Number(e.target.value))}
+                    >
+                      {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                        <option key={day} value={day}>{day}日</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {/* 毎年の場合は月と日付選択 */}
+                {addRecurrenceType === 'yearly' && (
+                  <>
+                    <div className="quick-add-option">
+                      <label className="quick-add-option-label">📆 月</label>
+                      <select
+                        className="quick-add-yearmonth"
+                        value={addYearlyMonth}
+                        onChange={e => setAddYearlyMonth(Number(e.target.value))}
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map(month => (
+                          <option key={month} value={month}>{month}月</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="quick-add-option">
+                      <label className="quick-add-option-label">日付</label>
+                      <select
+                        className="quick-add-yearday"
+                        value={addYearlyDay}
+                        onChange={e => setAddYearlyDay(Number(e.target.value))}
+                      >
+                        {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                          <option key={day} value={day}>{day}日</option>
+                        ))}
+                      </select>
+                    </div>
+                  </>
+                )}
+                {/* 時間選択（繰り返しタスクの場合のみ） */}
+                {addRecurrenceType !== 'none' && (
+                  <div className="quick-add-option">
+                    <label className="quick-add-option-label">⏰ 時間</label>
+                    <input
+                      type="time"
+                      className="quick-add-due-time"
+                      value={addDueTime}
+                      onChange={e => setAddDueTime(e.target.value)}
+                    />
+                  </div>
+                )}
+                {/* 通常タスクの期限 */}
+                {addRecurrenceType === 'none' && (
+                  <div className="quick-add-option">
+                    <span className="quick-add-option-label">📅 期限</span>
+                    <div className="date-input-group">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        className="date-input-year"
+                        placeholder="yyyy"
+                        maxLength={4}
+                        value={addDueDateYear}
+                        onChange={e => {
+                          const v = e.target.value.replace(/\D/g, '').slice(0, 4)
+                          setAddDueDateYear(v)
+                          if (v.length === 4) dueDateMonthRef.current?.focus()
+                        }}
+                      />
+                      <span className="date-separator">/</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        className="date-input-month"
+                        placeholder="mm"
+                        maxLength={2}
+                        ref={dueDateMonthRef}
+                        value={addDueDateMonth}
+                        onChange={e => {
+                          const v = e.target.value.replace(/\D/g, '').slice(0, 2)
+                          setAddDueDateMonth(v)
+                          if (v.length === 2 || (v.length === 1 && parseInt(v) > 1)) dueDateDayRef.current?.focus()
+                        }}
+                      />
+                      <span className="date-separator">/</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        className="date-input-day"
+                        placeholder="dd"
+                        maxLength={2}
+                        ref={dueDateDayRef}
+                        value={addDueDateDay}
+                        onChange={e => {
+                          const v = e.target.value.replace(/\D/g, '').slice(0, 2)
+                          setAddDueDateDay(v)
+                        }}
+                      />
+                    </div>
+                    <input
+                      type="time"
+                      className="quick-add-due-time"
+                      value={addDueTime}
+                      onChange={e => setAddDueTime(e.target.value)}
+                    />
+                    {hasValidDueDate && (
+                      <button
+                        type="button"
+                        className="quick-add-clear-btn"
+                        onClick={clearAddDueDate}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                )}
+                <span className="quick-add-options-hint">
+                  テキストで「明日」「毎日」などと入力しても自動認識されます
+                </span>
+              </div>
           </div>
         )}
 
@@ -2609,6 +2911,13 @@ END:VCALENDAR`
                             <span className={'plan-task-priority priority-' + task.priority}>
                               {task.priority === 'high' ? 'P1' : task.priority === 'medium' ? 'P2' : 'P3'}
                             </span>
+                            {task.recurrence && (
+                              <span className={`plan-task-recurrence recurrence-${task.recurrence.type}`}>
+                                {task.recurrence.type === 'daily' ? '🔄毎日' :
+                                 task.recurrence.type === 'weekly' ? '🔄毎週' :
+                                 task.recurrence.type === 'monthly' ? '🔄毎月' : '🔄毎年'}
+                              </span>
+                            )}
                             <span className="plan-task-due">
                               {dueDate.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' })}
                             </span>
@@ -2630,44 +2939,99 @@ END:VCALENDAR`
                   <div className="plan-add-tasks-section">
                     <div className="plan-options-row">
                       <div className="plan-label-input-wrapper">
-                        <label className="plan-label-label">共通ラベル <span className="required">*</span></label>
-                        <div className={'plan-label-input-row' + (!planLabel.trim() ? ' required-field' : '')}>
+                        <label className="plan-label-label">共通ラベル</label>
+                        <div className="plan-label-input-row">
                           <span className="plan-label-prefix">#</span>
                           <input
                             type="text"
                             className="plan-label-input"
-                            placeholder="例: TOEIC勉強（必須）"
+                            placeholder="空欄で「未設定」"
                             value={planLabel}
                             onChange={e => { setPlanLabel(e.target.value.replace(/^#/, '')); setPlanError('') }}
                           />
                         </div>
                       </div>
                       <div className="plan-project-select-wrapper">
-                        <label className="plan-label-label">プロジェクト <span className="required">*</span></label>
-                        <select
-                          className={'plan-project-select' + (!planProjectId ? ' required-field' : '')}
-                          value={planProjectId || ''}
-                          onChange={e => { setPlanProjectId(e.target.value || null); setPlanError('') }}
-                        >
-                          <option value="">選択してください（必須）</option>
-                          {projects.filter(p => !p.isArchived).map(p => (
-                            <option key={p.id} value={p.id}>{p.name}</option>
-                          ))}
-                        </select>
+                        <label className="plan-label-label">プロジェクト</label>
+                        {!showNewProjectInPlan ? (
+                          <div className="plan-project-row">
+                            <select
+                              className="plan-project-select"
+                              value={planProjectId || ''}
+                              onChange={e => { setPlanProjectId(e.target.value || null); setPlanError('') }}
+                            >
+                              <option value="">未設定</option>
+                              {projects.filter(p => !p.isArchived).map(p => (
+                                <option key={p.id} value={p.id}>{p.name}</option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="plan-new-project-btn"
+                              onClick={() => setShowNewProjectInPlan(true)}
+                              title="新規プロジェクト作成"
+                            >
+                              +
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="plan-new-project-input-row">
+                            <input
+                              type="text"
+                              className="plan-new-project-input"
+                              placeholder="プロジェクト名"
+                              value={newProjectNameInPlan}
+                              onChange={e => setNewProjectNameInPlan(e.target.value)}
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              className="plan-new-project-confirm-btn"
+                              onClick={() => {
+                                const name = newProjectNameInPlan.trim()
+                                if (!name) {
+                                  setShowNewProjectInPlan(false)
+                                  setNewProjectNameInPlan('')
+                                  return
+                                }
+                                const newProject: Project = {
+                                  id: crypto.randomUUID(),
+                                  name,
+                                  color: '#6366f1',
+                                  order: projects.length,
+                                  parentId: null,
+                                  isFavorite: false,
+                                  isArchived: false,
+                                }
+                                const updated = [...projects, newProject]
+                                setProjects(updated)
+                                saveProjects(updated)
+                                setPlanProjectId(newProject.id)
+                                setShowNewProjectInPlan(false)
+                                setNewProjectNameInPlan('')
+                              }}
+                              disabled={!newProjectNameInPlan.trim()}
+                            >
+                              作成
+                            </button>
+                            <button
+                              type="button"
+                              className="plan-new-project-cancel-btn"
+                              onClick={() => {
+                                setShowNewProjectInPlan(false)
+                                setNewProjectNameInPlan('')
+                              }}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
-                    <span className="plan-label-hint">追加するタスク全てにラベルとプロジェクトが設定されます</span>
+                    <span className="plan-label-hint">空欄の場合は「未設定」ラベルが自動で付与されます</span>
                     <button
                       className="plan-add-tasks-btn"
                       onClick={() => {
-                        if (!planLabel.trim()) {
-                          setPlanError('共通ラベルを入力してください')
-                          return
-                        }
-                        if (!planProjectId) {
-                          setPlanError('プロジェクトを選択してください')
-                          return
-                        }
                         const selectedTasks = planTasks.filter(t => t.selected)
                         if (selectedTasks.length === 0) {
                           setPlanError('追加するタスクを選択してください')
@@ -2677,14 +3041,76 @@ END:VCALENDAR`
                         const today = new Date()
                         today.setHours(0, 0, 0, 0)
 
-                        const taskLabels = [planLabel.trim()]
+                        // 空欄の場合は「未設定」（重複時は「未設定 1」等）
+                        const labelName = planLabel.trim() || getUniqueLabelName('未設定')
+                        const taskLabels = [labelName]
 
                         const newTodos: Todo[] = selectedTasks.map((task, index) => {
-                          const dueDate = new Date(today)
-                          dueDate.setDate(dueDate.getDate() + task.daysFromStart)
+                          // 繰り返しタスクの変換
+                          let recurrence: RecurrencePattern | null = null
+                          let finalDueDate: number
+                          let timeframe: Timeframe
+
+                          if (task.recurrence) {
+                            // 繰り返しタスク用のRecurrencePatternを作成
+                            recurrence = {
+                              type: task.recurrence.type,
+                              interval: task.recurrence.interval || 1,
+                            }
+
+                            // 繰り返しタイプに応じた期日と時間枠を設定
+                            const now = new Date()
+                            if (task.recurrence.type === 'daily') {
+                              // 毎日タスク：今日の23:59
+                              const targetDate = new Date(now)
+                              targetDate.setHours(23, 59, 0, 0)
+                              finalDueDate = targetDate.getTime()
+                              timeframe = 'today'
+                            } else if (task.recurrence.type === 'weekly') {
+                              // 毎週タスク：指定曜日の23:59
+                              const targetDay = task.recurrence.dayOfWeek ?? now.getDay()
+                              const daysUntilTarget = (targetDay - now.getDay() + 7) % 7 || 7
+                              const targetDate = new Date(now)
+                              targetDate.setDate(now.getDate() + daysUntilTarget)
+                              targetDate.setHours(23, 59, 0, 0)
+                              finalDueDate = targetDate.getTime()
+                              timeframe = 'week'
+                            } else if (task.recurrence.type === 'monthly') {
+                              // 毎月タスク：指定日の23:59
+                              const targetDay = task.recurrence.dayOfMonth ?? 1
+                              const targetDate = new Date(now.getFullYear(), now.getMonth(), targetDay, 23, 59, 0, 0)
+                              if (targetDate.getTime() < now.getTime()) {
+                                targetDate.setMonth(targetDate.getMonth() + 1)
+                              }
+                              finalDueDate = targetDate.getTime()
+                              timeframe = 'month'
+                            } else {
+                              // 毎年タスク：指定日の23:59
+                              const targetMonth = (task.recurrence.monthOfYear ?? 1) - 1
+                              const targetDay = task.recurrence.dayOfYear ?? 1
+                              const targetDate = new Date(now.getFullYear(), targetMonth, targetDay, 23, 59, 0, 0)
+                              if (targetDate.getTime() < now.getTime()) {
+                                targetDate.setFullYear(targetDate.getFullYear() + 1)
+                              }
+                              finalDueDate = targetDate.getTime()
+                              timeframe = 'year'
+                            }
+                          } else {
+                            // 通常タスク
+                            const dueDate = new Date(today)
+                            dueDate.setDate(dueDate.getDate() + task.daysFromStart)
+                            // 今日中のタスクは23:59を期限に
+                            if (task.daysFromStart === 0) {
+                              dueDate.setHours(23, 59, 0, 0)
+                            }
+                            finalDueDate = dueDate.getTime()
+                            timeframe =
+                              task.daysFromStart === 0 ? 'today' :
+                              task.daysFromStart <= 7 ? 'week' :
+                              task.daysFromStart <= 31 ? 'month' : 'year'
+                          }
 
                           const priority: Priority = task.priority === 'high' ? 1 : task.priority === 'medium' ? 2 : 3
-                          const timeframe: Timeframe = task.daysFromStart === 0 ? 'today' : task.daysFromStart <= 7 ? 'week' : 'month'
 
                           return {
                             id: Date.now().toString() + Math.random().toString(36).slice(2) + index,
@@ -2694,22 +3120,17 @@ END:VCALENDAR`
                             createdAt: Date.now() + index,
                             parentId: null,
                             priority,
-                            reminder: null,
-                            reminderSent: false,
-                            weeklyReminder: null,
-                            followUpCount: 0,
-                            lastNotifiedAt: null,
                             timeframe,
-                            dueDate: dueDate.getTime(),
-                            dueDateNotified: false,
+                            dueDate: finalDueDate,
+                            dueDateNotification: { enabled: true, notifyBefore: 0, notifiedAt: null, followUpCount: 0 },
                             labels: taskLabels,
-                            recurrence: null,
+                            recurrence,
                             description: task.description,
                             sectionId: null,
                             order: todos.length + index,
                             estimatedMinutes: task.estimatedMinutes || null,
                             comments: [],
-                            projectId: planProjectId,
+                            projectId: planProjectId,  // nullも許可
                             karmaAwarded: false,
                             archived: false,
                             archivedAt: null,
@@ -2722,6 +3143,8 @@ END:VCALENDAR`
                         setPlanGoal('')
                         setPlanLabel('')
                         setPlanProjectId(null)
+                        setShowNewProjectInPlan(false)
+                        setNewProjectNameInPlan('')
                         setCurrentTimeframe('today')
                       }}
                       disabled={planTasks.filter(t => t.selected).length === 0}
@@ -2753,7 +3176,7 @@ END:VCALENDAR`
                     <div className="board-task-title">{todo.text}</div>
                     {todo.dueDate && (
                       <div className={'board-task-due' + (isDueDateOverdue(todo.dueDate) ? ' overdue' : '')}>
-                        📅 {formatDueDate(todo.dueDate)}
+                        📅 {formatDueDate(todo.dueDate, todo.recurrence)}
                       </div>
                     )}
                     {todo.labels && todo.labels.length > 0 && (
@@ -2899,7 +3322,6 @@ END:VCALENDAR`
               <button className="due-date-btn">📅</button>
               <span className="todo-text">買い物に行く</span>
               <button className="edit-btn">✎</button>
-              <button className="reminder-btn">🔔</button>
               <button className="ai-btn">✨</button>
               <button className="delete-btn">×</button>
             </li>
@@ -2914,7 +3336,49 @@ END:VCALENDAR`
                 {filter === 'all' ? 'nキーで新しいタスクを追加' : filter === 'active' ? '素晴らしい！今日もお疲れさまでした' : 'タスクを完了するとここに表示されます'}
               </div>
             </li>
-          ) : currentTimeframe === 'plan' ? null : buildTree(null).filter(t => !isHidden(t)).map(todo => {
+          ) : currentTimeframe === 'plan' ? null : (() => {
+            const allTasks = buildTree(null).filter(t => !isHidden(t))
+
+            // 各タブに対応する繰り返しタイプを取得
+            const getRecurrenceTypeForTimeframe = (tf: Timeframe): 'daily' | 'weekly' | 'monthly' | 'yearly' | null => {
+              switch (tf) {
+                case 'today': return 'daily'
+                case 'week': return 'weekly'
+                case 'month': return 'monthly'
+                case 'year': return 'yearly'
+                default: return null
+              }
+            }
+
+            const recurrenceType = getRecurrenceTypeForTimeframe(currentTimeframe as Timeframe)
+            const recurringTasks = recurrenceType ? allTasks.filter(t => t.recurrence?.type === recurrenceType) : []
+            const regularTasks = recurrenceType ? allTasks.filter(t => t.recurrence?.type !== recurrenceType) : allTasks
+
+            // セクションタイトルを取得
+            const getRecurringSectionTitle = (tf: Timeframe): { icon: string; title: string } => {
+              switch (tf) {
+                case 'today': return { icon: '🔄', title: '毎日のタスク' }
+                case 'week': return { icon: '📅', title: '毎週のタスク' }
+                case 'month': return { icon: '📆', title: '毎月のタスク' }
+                case 'year': return { icon: '🗓️', title: '毎年のタスク' }
+                default: return { icon: '🔄', title: '繰り返しタスク' }
+              }
+            }
+
+            const getRegularSectionTitle = (tf: Timeframe): { icon: string; title: string } => {
+              switch (tf) {
+                case 'today': return { icon: '📋', title: '今日のタスク' }
+                case 'week': return { icon: '📋', title: '今週のタスク' }
+                case 'month': return { icon: '📋', title: '今月のタスク' }
+                case 'year': return { icon: '📋', title: '今年のタスク' }
+                default: return { icon: '📋', title: 'タスク' }
+              }
+            }
+
+            const recurringSection = getRecurringSectionTitle(currentTimeframe as Timeframe)
+            const regularSection = getRegularSectionTitle(currentTimeframe as Timeframe)
+
+            const renderTodoItem = (todo: Todo) => {
             const depth = getDepth(todo)
             const hasChild = hasChildren(todo.id)
             const isCollapsed = collapsed.has(todo.id)
@@ -2942,13 +3406,18 @@ END:VCALENDAR`
                   </button>
                 )}
                 <button className="checkbox" onClick={() => toggleTodo(todo.id)}>{todo.completed ? '✓' : ''}</button>
+                {todo.recurrence && (
+                  <span className={`recurrence-badge recurrence-${todo.recurrence.type}`} title={formatRecurrence(todo.recurrence)}>
+                    {todo.recurrence.type === 'daily' ? '毎日' : todo.recurrence.type === 'weekly' ? '毎週' : todo.recurrence.type === 'monthly' ? '毎月' : '毎年'}
+                  </span>
+                )}
                 <button className={'priority-badge priority-' + priorityColor(todo.priority)} onClick={() => cyclePriority(todo.id)} title="優先度を変更">{priorityLabel(todo.priority)}</button>
                 {todo.parentId === null && (
                   <button className={'timeframe-badge timeframe-' + todo.timeframe} onClick={() => cycleTimeframe(todo.id)} title="期間を変更">{timeframeLabel(todo.timeframe)}</button>
                 )}
                 {todo.parentId === null && (
-                  <button className={'due-date-btn' + (todo.dueDate ? (isDueDateOverdue(todo.dueDate) && !todo.completed ? ' overdue' : ' has-due-date') : '')} onClick={() => openDueDateModal(todo.id)} title={todo.dueDate ? `期日: ${formatDueDate(todo.dueDate)}` : '期日を設定'}>
-                    📅{todo.dueDate && <span className="due-date-text">{formatDueDate(todo.dueDate)}</span>}
+                  <button className={'due-date-btn' + (todo.dueDate ? (isDueDateOverdue(todo.dueDate) && !todo.completed ? ' overdue' : ' has-due-date') : '')} onClick={() => openDueDateModal(todo.id)} title={todo.dueDate ? `期日: ${formatDueDate(todo.dueDate, todo.recurrence)}` : '期日を設定'}>
+                    📅{todo.dueDate && <span className="due-date-text">{formatDueDate(todo.dueDate, todo.recurrence)}</span>}
                   </button>
                 )}
                 {editingId === todo.id ? (
@@ -2958,7 +3427,6 @@ END:VCALENDAR`
                 ) : (
                   <span className="todo-text" onDoubleClick={() => startEdit(todo)}>
                     {todo.text}
-                    {todo.recurrence && <span className="recurrence-badge" title={formatRecurrence(todo.recurrence)}>🔄</span>}
                   </span>
                 )}
                 <div className="labels-inline">
@@ -2980,17 +3448,41 @@ END:VCALENDAR`
                 <button className={'comment-btn' + (todo.comments.length > 0 ? ' has-comments' : '')} onClick={() => openCommentModal(todo.id)} title={todo.comments.length > 0 ? `${todo.comments.length}件のコメント` : 'コメントを追加'}>
                   💬{todo.comments.length > 0 && <span className="comment-count">{todo.comments.length}</span>}
                 </button>
-                <button className={'reminder-btn' + (todo.reminder || todo.weeklyReminder ? ' has-reminder' : '')} onClick={() => openReminderModal(todo.id)} title={todo.weeklyReminder ? formatWeeklyReminder(todo.weeklyReminder) : todo.reminder ? formatReminder(todo.reminder) : 'リマインダー設定'}>
-                  🔔{todo.weeklyReminder && <span className="reminder-time">{formatWeeklyReminder(todo.weeklyReminder)}</span>}
-                  {todo.reminder && !todo.weeklyReminder && <span className="reminder-time">{formatReminder(todo.reminder)}</span>}
-                </button>
                 <button className={'ai-btn' + (decomposing === todo.id ? ' decomposing' : '')} onClick={() => handleDecompose(todo)} disabled={decomposing === todo.id || todo.completed} title={decomposing === todo.id ? '検索・分解中...' : 'AIで分解'}>
                   {decomposing === todo.id ? '🔄' : '✨'}
                 </button>
                 <button className="delete-btn" onClick={() => requestDeleteTodo(todo.id)}>×</button>
               </li>
             )
-          })}
+            }
+
+            return (
+              <>
+                {/* 繰り返しタスクセクション */}
+                {recurringTasks.length > 0 && (
+                  <>
+                    <li className="section-header recurring-section-header">
+                      <span className="section-icon">{recurringSection.icon}</span>
+                      <span className="section-title">{recurringSection.title}</span>
+                      <span className="section-count">{recurringTasks.length}</span>
+                    </li>
+                    {recurringTasks.map(renderTodoItem)}
+                  </>
+                )}
+                {/* 通常タスクセクション - 常に表示 */}
+                {regularTasks.length > 0 && (
+                  <>
+                    <li className="section-header regular-section-header">
+                      <span className="section-icon">{regularSection.icon}</span>
+                      <span className="section-title">{regularSection.title}</span>
+                      <span className="section-count">{regularTasks.length}</span>
+                    </li>
+                    {regularTasks.map(renderTodoItem)}
+                  </>
+                )}
+              </>
+            )
+          })()}
         </ul>
         </>
         )}
@@ -3281,63 +3773,45 @@ END:VCALENDAR`
         </div>
       )}
 
-      {showReminderModal && reminderTodoId && (
-        <div className="modal-overlay" onClick={() => setShowReminderModal(false)}>
-          <div className="modal reminder-modal" onClick={e => e.stopPropagation()}>
-            <h2>リマインダー設定</h2>
-            <div className="reminder-type-tabs">
-              <button className={'reminder-type-tab' + (reminderType === 'once' ? ' active' : '')} onClick={() => setReminderType('once')}>1回のみ</button>
-              <button className={'reminder-type-tab' + (reminderType === 'weekly' ? ' active' : '')} onClick={() => setReminderType('weekly')}>毎週</button>
-            </div>
-            {reminderType === 'once' ? (
-              <>
-                <p className="modal-description">通知する日時:</p>
-                <input
-                  type="datetime-local"
-                  className="reminder-input"
-                  value={reminderDateTime}
-                  onChange={e => setReminderDateTime(e.target.value)}
-                />
-              </>
-            ) : (
-              <>
-                <p className="modal-description">曜日を選択:</p>
-                <div className="weekday-selector">
-                  {dayNames.map((name, i) => (
-                    <button key={i} className={'weekday-btn' + (weeklyDays.includes(i) ? ' selected' : '')} onClick={() => toggleWeeklyDay(i)}>{name}</button>
-                  ))}
-                </div>
-                <p className="modal-description">時刻:</p>
-                <input
-                  type="time"
-                  className="reminder-input"
-                  value={weeklyTime}
-                  onChange={e => setWeeklyTime(e.target.value)}
-                />
-              </>
-            )}
-            <div className="modal-actions">
-              {(todos.find(t => t.id === reminderTodoId)?.reminder || todos.find(t => t.id === reminderTodoId)?.weeklyReminder) && (
-                <button className="modal-btn danger" onClick={() => clearReminder(reminderTodoId)}>削除</button>
-              )}
-              <button className="modal-btn secondary" onClick={() => setShowReminderModal(false)}>キャンセル</button>
-              <button className="modal-btn primary" onClick={setReminder} disabled={reminderType === 'once' ? !reminderDateTime : weeklyDays.length === 0}>設定</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {showDueDateModal && dueDateTodoId && (
         <div className="modal-overlay" onClick={() => setShowDueDateModal(false)}>
           <div className="modal due-date-modal" onClick={e => e.stopPropagation()}>
             <h2>期日設定</h2>
-            <p className="modal-description">タスクの期日を設定します。期日を過ぎても完了していない場合は通知でお知らせします。</p>
+            <p className="modal-description">タスクの期日と通知を設定します。</p>
             <input
               type="datetime-local"
               className="due-date-input"
               value={dueDateInput}
               onChange={e => setDueDateInput(e.target.value)}
             />
+            <div className="notification-settings">
+              <label className="notify-checkbox">
+                <input
+                  type="checkbox"
+                  checked={dueDateNotifyEnabled}
+                  onChange={e => setDueDateNotifyEnabled(e.target.checked)}
+                />
+                期日に通知する
+              </label>
+              {dueDateNotifyEnabled && (
+                <div className="notify-before-setting">
+                  <span>通知タイミング:</span>
+                  <select
+                    value={dueDateNotifyBefore}
+                    onChange={e => setDueDateNotifyBefore(Number(e.target.value))}
+                  >
+                    <option value={0}>期限ちょうど</option>
+                    <option value={15}>15分前</option>
+                    <option value={30}>30分前</option>
+                    <option value={60}>1時間前</option>
+                    <option value={120}>2時間前</option>
+                    <option value={360}>6時間前</option>
+                    <option value={720}>12時間前</option>
+                    <option value={1440}>1日前</option>
+                  </select>
+                </div>
+              )}
+            </div>
             <div className="modal-actions">
               {todos.find(t => t.id === dueDateTodoId)?.dueDate && (
                 <button className="modal-btn danger" onClick={() => clearDueDate(dueDateTodoId)}>削除</button>
@@ -3369,8 +3843,7 @@ END:VCALENDAR`
                 <ul className="help-list">
                   <li><strong>✓ チェック:</strong> 完了/未完了の切り替え</li>
                   <li><strong>P1〜P4:</strong> クリックで優先度を変更</li>
-                  <li><strong>📅 期日:</strong> 具体的な日時を設定</li>
-                  <li><strong>🔔 リマインダー:</strong> 通知を設定</li>
+                  <li><strong>📅 期日:</strong> 期日と通知を設定</li>
                   <li><strong>✨ AI分解:</strong> サブタスクに自動分解（要APIキー）</li>
                   <li><strong>✎ 編集:</strong> ダブルクリックまたはボタンで編集</li>
                   <li><strong>× 削除:</strong> タスクを削除</li>
@@ -3382,7 +3855,8 @@ END:VCALENDAR`
                 <ul className="help-list">
                   <li><strong>今日:</strong> 今日中にやるべきタスク</li>
                   <li><strong>1週間:</strong> 今週中のタスク</li>
-                  <li><strong>1ヶ月:</strong> 長期的なタスク</li>
+                  <li><strong>1ヶ月:</strong> 1ヶ月以内のタスク</li>
+                  <li><strong>1年:</strong> 長期的なタスク</li>
                   <li><strong>計画:</strong> AI計画生成（目標から逆算）</li>
                 </ul>
               </div>
@@ -3397,12 +3871,11 @@ END:VCALENDAR`
                 </ul>
               </div>
               <div className="help-section">
-                <h3>リマインダー</h3>
+                <h3>期日通知</h3>
                 <ul className="help-list">
-                  <li><strong>単発:</strong> 指定した日時に1回だけ通知</li>
-                  <li><strong>毎週:</strong> 指定した曜日・時刻に繰り返し通知</li>
-                  <li><strong>期日通知:</strong> 期日当日に自動で通知</li>
-                  <li><strong>専属リマインダー:</strong> AI人格がリマインド文を生成</li>
+                  <li><strong>通知タイミング:</strong> 期限ちょうどまたは指定時間前に通知</li>
+                  <li><strong>AI人格:</strong> 設定でAI人格を選択すると、パーソナライズされた通知が届きます</li>
+                  <li><strong>Discord連携:</strong> Discord DMでも通知を受け取れます</li>
                 </ul>
               </div>
               <div className="help-section">
@@ -3412,7 +3885,7 @@ END:VCALENDAR`
                   <li><strong>モデル選択:</strong> 設定 → モデル設定で変更</li>
                   <li><strong>タスク分解:</strong> ✨ボタンでサブタスクに自動分解</li>
                   <li><strong>計画生成:</strong> 計画タブで目標から計画を作成</li>
-                  <li><strong>専属リマインダー:</strong> 設定 → 人格で選択</li>
+                  <li><strong>AI人格:</strong> 設定 → 人格で選択</li>
                 </ul>
               </div>
               <div className="help-section">
@@ -3673,10 +4146,21 @@ END:VCALENDAR`
       )}
 
       {/* カルマモーダル */}
-      {showKarmaModal && (
+      {showKarmaModal && (() => {
+        const currentLevelStart = getPointsForCurrentLevel(karma.level)
+        const nextLevelStart = getPointsForNextLevel(karma.level)
+        const pointsInCurrentLevel = karma.totalPoints - currentLevelStart
+        const pointsNeededForNext = nextLevelStart - currentLevelStart
+        const progressPercent = karma.level >= 10 ? 100 : Math.min(100, (pointsInCurrentLevel / pointsNeededForNext) * 100)
+        const pointsToNextLevel = karma.level >= 10 ? 0 : nextLevelStart - karma.totalPoints
+
+        return (
         <div className="modal-overlay" onClick={() => setShowKarmaModal(false)}>
           <div className="modal karma-modal" onClick={e => e.stopPropagation()}>
-            <h2>🏆 カルマ</h2>
+            <div className="karma-modal-header">
+              <h2>🏆 経験値システム</h2>
+              <button className="modal-close-btn" onClick={() => setShowKarmaModal(false)} title="閉じる">×</button>
+            </div>
             <div className="karma-stats">
               <div className="karma-main">
                 <div className="karma-level-display">
@@ -3688,6 +4172,26 @@ END:VCALENDAR`
                   <span className="points-label">ポイント</span>
                 </div>
               </div>
+
+              {/* プログレスバー */}
+              <div className="karma-progress">
+                <div className="progress-header">
+                  <span className="progress-label">
+                    {karma.level >= 10 ? '最高レベル達成！' : `次のレベル（Lv.${karma.level + 1} ${getLevelName(karma.level + 1)}）まで`}
+                  </span>
+                  <span className="progress-numbers">
+                    {karma.level >= 10 ? '∞' : `あと ${pointsToNextLevel} pt`}
+                  </span>
+                </div>
+                <div className="progress-bar">
+                  <div className="progress-fill" style={{ width: `${progressPercent}%` }}></div>
+                </div>
+                <div className="progress-detail">
+                  {karma.level < 10 && <span>{pointsInCurrentLevel} / {pointsNeededForNext} pt</span>}
+                </div>
+              </div>
+
+              {/* 統計 */}
               <div className="karma-details">
                 <div className="karma-stat">
                   <span className="stat-icon">🔥</span>
@@ -3710,19 +4214,67 @@ END:VCALENDAR`
                   <span className="stat-label">今日の完了</span>
                 </div>
               </div>
-              <div className="karma-progress">
-                <p className="progress-label">次のレベルまで</p>
-                <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: `${Math.min(100, (karma.totalPoints % 100) / 100 * 100)}%` }}></div>
+
+              {/* ポイント計算ガイド */}
+              <div className="karma-guide">
+                <h3>📖 ポイント獲得ガイド</h3>
+                <div className="guide-section">
+                  <h4>優先度ボーナス（基本ポイント）</h4>
+                  <div className="guide-table">
+                    <div className="guide-row"><span className="priority-badge p1">P1</span><span>10 pt</span></div>
+                    <div className="guide-row"><span className="priority-badge p2">P2</span><span>7 pt</span></div>
+                    <div className="guide-row"><span className="priority-badge p3">P3</span><span>5 pt</span></div>
+                    <div className="guide-row"><span className="priority-badge p4">P4</span><span>3 pt</span></div>
+                  </div>
+                </div>
+                <div className="guide-section">
+                  <h4>困難度ボーナス（所要時間）</h4>
+                  <div className="guide-table">
+                    <div className="guide-row"><span>〜15分</span><span>+2 pt</span></div>
+                    <div className="guide-row"><span>16〜30分</span><span>+5 pt</span></div>
+                    <div className="guide-row"><span>31〜60分</span><span>+12 pt</span></div>
+                    <div className="guide-row"><span>1〜2時間</span><span>+25 pt</span></div>
+                    <div className="guide-row"><span>2〜4時間</span><span>+45 pt</span></div>
+                    <div className="guide-row"><span>4〜8時間</span><span>+80 pt</span></div>
+                    <div className="guide-row"><span>8時間以上</span><span>+120 pt</span></div>
+                  </div>
+                </div>
+                <div className="guide-section">
+                  <h4>ストリークボーナス（連続日数）</h4>
+                  <p className="guide-note">毎日タスクを完了すると +1〜7 pt（最大7日分）</p>
+                  <p className="guide-note current-streak">現在のボーナス: +{Math.min(karma.streak, 7)} pt</p>
+                </div>
+              </div>
+
+              {/* レベル一覧 */}
+              <div className="karma-levels">
+                <h3>🎖️ レベル一覧</h3>
+                <div className="levels-table">
+                  {LEVEL_THRESHOLDS.slice(1).map((threshold, i) => {
+                    const level = i + 1
+                    const isCurrentLevel = karma.level === level
+                    const isAchieved = karma.level > level
+                    return (
+                      <div key={level} className={`level-row ${isCurrentLevel ? 'current' : ''} ${isAchieved ? 'achieved' : ''}`}>
+                        <span className="level-info">
+                          <span className="level-num">Lv.{level}</span>
+                          <span className="level-name">{getLevelName(level)}</span>
+                        </span>
+                        <span className="level-threshold">
+                          {level === 1 ? '0' : threshold} pt〜
+                        </span>
+                        {isCurrentLevel && <span className="level-badge">現在</span>}
+                        {isAchieved && <span className="level-check">✓</span>}
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             </div>
-            <div className="modal-actions">
-              <button className="modal-btn secondary" onClick={() => setShowKarmaModal(false)}>閉じる</button>
-            </div>
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* 所要時間設定モーダル */}
       {showDurationModal && durationTodoId && (
