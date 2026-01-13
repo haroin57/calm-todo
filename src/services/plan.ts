@@ -22,17 +22,17 @@ function resolvePlanProvider(config: KanaeReminderConfig): PlanProvider {
   return 'claude'
 }
 
-export async function generatePlan(goal: string, webSearchContext?: string): Promise<PlanResult> {
+export async function generatePlan(goal: string, targetDays: number, webSearchContext?: string): Promise<PlanResult> {
   const config = getKanaeConfig()
   const provider = resolvePlanProvider(config)
 
   if (provider === 'claude') {
-    return await generatePlanClaude(goal, webSearchContext)
+    return await generatePlanClaude(goal, targetDays, webSearchContext)
   }
   if (provider === 'gemini') {
-    return await generatePlanGemini(goal, webSearchContext)
+    return await generatePlanGemini(goal, targetDays, webSearchContext)
   }
-  return await generatePlanOpenAI(goal, webSearchContext)
+  return await generatePlanOpenAI(goal, targetDays, webSearchContext)
 }
 
 export type { PlanResult, PlanTask }

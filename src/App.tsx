@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
 import { parseNaturalLanguage, getNextRecurrenceDate, formatRecurrence, type RecurrencePattern } from './lib/parseNaturalLanguage'
+import { importICSToTodos, type ImportStats } from './lib/icsParser'
 import { generatePlan, type PlanTask, type PlanResult } from './services/plan'
 import { searchWithTavily, formatSearchResultsForPrompt, getTavilyApiKey } from './lib/tavily'
 import { getApiKey as getOpenAiApiKey } from './lib/openai'
@@ -229,10 +230,19 @@ export default function App() {
   const [dueDateInput, setDueDateInput] = useState('')
   const [dueDateNotifyEnabled, setDueDateNotifyEnabled] = useState(true)
   const [dueDateNotifyBefore, setDueDateNotifyBefore] = useState(0) // 期日の何分前に通知するか
+  const [dueDateRecurrenceType, setDueDateRecurrenceType] = useState<'none' | 'daily' | 'weekly' | 'monthly' | 'yearly'>('none')
+  const [dueDateRecurrenceDays, setDueDateRecurrenceDays] = useState<number[]>([]) // 曜日（weekly用）
+  const [dueDateRecurrenceTime, setDueDateRecurrenceTime] = useState('09:00') // 繰り返しタスクの時間
+  const [dueDateMonthlyDay, setDueDateMonthlyDay] = useState(1) // 毎月の日付
+  const [dueDateYearlyMonth, setDueDateYearlyMonth] = useState(1) // 毎年の月
+  const [dueDateYearlyDay, setDueDateYearlyDay] = useState(1) // 毎年の日付
   const [showHelp, setShowHelp] = useState(false)
   const [showIntro, setShowIntro] = useState(() => !localStorage.getItem(INTRO_SEEN_KEY))
   const [introStep, setIntroStep] = useState(0)
   const [exportResult, setExportResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [importResult, setImportResult] = useState<{ success: boolean; stats: ImportStats } | null>(null)
+  const [importOptions, setImportOptions] = useState({ importCompleted: false, importPast: false })
   const [showCalendar, setShowCalendar] = useState(false)
   const [calendarDate, setCalendarDate] = useState(new Date())
   const [selectedCalendarDay, setSelectedCalendarDay] = useState<Date | null>(null)
@@ -268,6 +278,9 @@ export default function App() {
   const [draggedTodoId, setDraggedTodoId] = useState<string | null>(null)
   // 計画機能関連
   const [planGoal, setPlanGoal] = useState('')
+  const [planTargetDays, setPlanTargetDays] = useState<number>(30) // デフォルト: 1ヶ月
+  const [planTargetPreset, setPlanTargetPreset] = useState<string>('30') // プリセット選択値
+  const [planCustomDate, setPlanCustomDate] = useState<string>('') // カスタム日付
   const [planResult, setPlanResult] = useState<PlanResult | null>(null)
   const [planTasks, setPlanTasks] = useState<PlanTask[]>([])
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false)
@@ -1748,6 +1761,10 @@ export default function App() {
     if (todo?.dueDate) {
       const date = new Date(todo.dueDate)
       setDueDateInput(formatLocalDateTime(date))
+      // 時間を抽出（HH:MM形式）
+      const hours = String(date.getHours()).padStart(2, '0')
+      const minutes = String(date.getMinutes()).padStart(2, '0')
+      setDueDateRecurrenceTime(`${hours}:${minutes}`)
       // 通知設定を読み込み
       if (todo.dueDateNotification) {
         setDueDateNotifyEnabled(todo.dueDateNotification.enabled)
@@ -1755,6 +1772,21 @@ export default function App() {
       } else {
         setDueDateNotifyEnabled(true)
         setDueDateNotifyBefore(0)
+      }
+      // 繰り返し設定を読み込み
+      if (todo.recurrence) {
+        setDueDateRecurrenceType(todo.recurrence.type)
+        setDueDateRecurrenceDays(todo.recurrence.daysOfWeek || [])
+        setDueDateMonthlyDay(todo.recurrence.dayOfMonth || date.getDate())
+        // 毎年の場合は月と日を設定
+        setDueDateYearlyMonth(date.getMonth() + 1)
+        setDueDateYearlyDay(date.getDate())
+      } else {
+        setDueDateRecurrenceType('none')
+        setDueDateRecurrenceDays([])
+        setDueDateMonthlyDay(date.getDate())
+        setDueDateYearlyMonth(date.getMonth() + 1)
+        setDueDateYearlyDay(date.getDate())
       }
     } else {
       // Default to tomorrow at 18:00
@@ -1764,23 +1796,88 @@ export default function App() {
       setDueDateInput(formatLocalDateTime(tomorrow))
       setDueDateNotifyEnabled(true)
       setDueDateNotifyBefore(0)
+      setDueDateRecurrenceType('none')
+      setDueDateRecurrenceDays([])
+      setDueDateRecurrenceTime('09:00')
+      setDueDateMonthlyDay(1)
+      setDueDateYearlyMonth(new Date().getMonth() + 1)
+      setDueDateYearlyDay(1)
     }
     setDueDateTodoId(todoId)
     setShowDueDateModal(true)
   }
 
   const setDueDate = () => {
-    if (!dueDateTodoId || !dueDateInput) return
-    const timestamp = new Date(dueDateInput).getTime()
+    if (!dueDateTodoId) return
+
+    let timestamp: number
     const now = Date.now()
+    const [hours, minutes] = dueDateRecurrenceTime.split(':').map(Number)
+
+    if (dueDateRecurrenceType === 'none') {
+      // 通常タスク：datetime-localから取得
+      if (!dueDateInput) return
+      timestamp = new Date(dueDateInput).getTime()
+    } else if (dueDateRecurrenceType === 'daily') {
+      // 毎日：今日の指定時刻（過ぎていれば明日）
+      const date = new Date()
+      date.setHours(hours, minutes, 0, 0)
+      if (date.getTime() <= now) {
+        date.setDate(date.getDate() + 1)
+      }
+      timestamp = date.getTime()
+    } else if (dueDateRecurrenceType === 'weekly') {
+      // 毎週：次の該当曜日
+      if (dueDateRecurrenceDays.length === 0) return
+      const date = new Date()
+      date.setHours(hours, minutes, 0, 0)
+      const currentDay = date.getDay()
+      const sortedDays = [...dueDateRecurrenceDays].sort((a, b) => a - b)
+      let targetDay = sortedDays.find(d => d > currentDay || (d === currentDay && date.getTime() > now))
+      if (targetDay === undefined) {
+        targetDay = sortedDays[0]
+        date.setDate(date.getDate() + (7 - currentDay + targetDay))
+      } else {
+        date.setDate(date.getDate() + (targetDay - currentDay))
+      }
+      timestamp = date.getTime()
+    } else if (dueDateRecurrenceType === 'monthly') {
+      // 毎月：次の該当日
+      const date = new Date()
+      date.setDate(dueDateMonthlyDay)
+      date.setHours(hours, minutes, 0, 0)
+      if (date.getTime() <= now) {
+        date.setMonth(date.getMonth() + 1)
+      }
+      timestamp = date.getTime()
+    } else {
+      // 毎年：次の該当月日
+      const date = new Date()
+      date.setMonth(dueDateYearlyMonth - 1, dueDateYearlyDay)
+      date.setHours(hours, minutes, 0, 0)
+      if (date.getTime() <= now) {
+        date.setFullYear(date.getFullYear() + 1)
+      }
+      timestamp = date.getTime()
+    }
+
     // 通知時刻を計算（期日 - notifyBefore分）
     const notifyTime = timestamp - dueDateNotifyBefore * 60 * 1000
     // 通知時刻が現在より前の場合は通知済みとして扱う（即時通知を防ぐ）
     const notifiedAt = notifyTime <= now ? now : null
+    // 繰り返し設定を構築
+    const recurrence: RecurrencePattern | null = dueDateRecurrenceType !== 'none' ? {
+      type: dueDateRecurrenceType,
+      interval: 1,
+      ...(dueDateRecurrenceType === 'weekly' && dueDateRecurrenceDays.length > 0 ? { daysOfWeek: dueDateRecurrenceDays } : {}),
+      ...(dueDateRecurrenceType === 'monthly' ? { dayOfMonth: dueDateMonthlyDay } : {}),
+      ...(dueDateRecurrenceType === 'yearly' ? { month: dueDateYearlyMonth, dayOfMonth: dueDateYearlyDay } : {})
+    } : null
     updateTodosWithHistory(prev => prev.map(todo =>
       todo.id === dueDateTodoId ? {
         ...todo,
         dueDate: timestamp,
+        recurrence,
         dueDateNotification: {
           enabled: dueDateNotifyEnabled,
           notifyBefore: dueDateNotifyBefore,
@@ -1792,15 +1889,19 @@ export default function App() {
     setShowDueDateModal(false)
     setDueDateTodoId(null)
     setDueDateInput('')
+    setDueDateRecurrenceType('none')
+    setDueDateRecurrenceDays([])
   }
 
   const clearDueDate = (todoId: string) => {
     updateTodosWithHistory(prev => prev.map(todo =>
-      todo.id === todoId ? { ...todo, dueDate: null, dueDateNotification: null } : todo
+      todo.id === todoId ? { ...todo, dueDate: null, dueDateNotification: null, recurrence: null } : todo
     ))
     setShowDueDateModal(false)
     setDueDateTodoId(null)
     setDueDateInput('')
+    setDueDateRecurrenceType('none')
+    setDueDateRecurrenceDays([])
   }
 
   const formatDueDate = (timestamp: number, recurrence?: RecurrencePattern | null) => {
@@ -1955,6 +2056,56 @@ END:VCALENDAR`
     a.download = `calm-todo-${new Date().toISOString().slice(0, 10)}.ics`
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  // Import from ICS file
+  const handleICSImport = async (file: File) => {
+    try {
+      const content = await file.text()
+      const { todos: importedTodos, stats } = importICSToTodos(content, {
+        importCompleted: importOptions.importCompleted,
+        importPast: importOptions.importPast,
+      })
+
+      if (importedTodos.length === 0) {
+        setImportResult({
+          success: false,
+          stats,
+        })
+        return
+      }
+
+      // Todoにidを付与して追加
+      const newTodos: Todo[] = importedTodos.map((todo, index) => ({
+        ...todo,
+        id: crypto.randomUUID(),
+        order: todos.length + index,
+      } as Todo))
+
+      updateTodosWithHistory(prev => [...prev, ...newTodos])
+
+      setImportResult({
+        success: true,
+        stats,
+      })
+
+      // 3秒後に結果を非表示
+      setTimeout(() => {
+        setImportResult(null)
+        setShowImportModal(false)
+      }, 3000)
+    } catch (error) {
+      console.error('ICS import error:', error)
+      setImportResult({
+        success: false,
+        stats: {
+          total: 0,
+          imported: 0,
+          skipped: 0,
+          skippedReasons: { completed: 0, past: 0 },
+        },
+      })
+    }
   }
 
   // Export to ICS and open Google Calendar import page
@@ -2588,11 +2739,63 @@ END:VCALENDAR`
             <div className="plan-input-section">
               <h3>目標を入力</h3>
               <p className="plan-description">達成したい目標を自由に書いてください。AIが具体的なタスクとスケジュールを提案します。</p>
-              <p className="plan-description">※達成したい日を自然言語で明示してください（例: 2025年6月30日/来月末/3ヶ月後）。未指定の場合は生成できません。</p>
+              <div className="plan-target-date-section">
+                <label className="plan-target-label">目標達成期間:</label>
+                <select
+                  className="plan-target-select"
+                  value={planTargetPreset}
+                  onChange={e => {
+                    const value = e.target.value
+                    setPlanTargetPreset(value)
+                    if (value !== 'custom') {
+                      setPlanTargetDays(Number(value))
+                      setPlanCustomDate('')
+                    }
+                  }}
+                >
+                  <option value="7">1週間</option>
+                  <option value="14">2週間</option>
+                  <option value="30">1ヶ月</option>
+                  <option value="60">2ヶ月</option>
+                  <option value="90">3ヶ月</option>
+                  <option value="180">6ヶ月</option>
+                  <option value="365">1年</option>
+                  <option value="custom">カスタム</option>
+                </select>
+                {planTargetPreset === 'custom' ? (
+                  <input
+                    type="date"
+                    className="plan-target-date-input"
+                    value={planCustomDate}
+                    min={new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0]}
+                    onChange={e => {
+                      const dateValue = e.target.value
+                      setPlanCustomDate(dateValue)
+                      if (dateValue) {
+                        const selectedDate = new Date(dateValue)
+                        const today = new Date()
+                        today.setHours(0, 0, 0, 0)
+                        const diffTime = selectedDate.getTime() - today.getTime()
+                        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+                        setPlanTargetDays(Math.max(1, diffDays))
+                      }
+                    }}
+                  />
+                ) : (
+                  <span className="plan-target-hint">
+                    （{new Date(Date.now() + planTargetDays * 24 * 60 * 60 * 1000).toLocaleDateString('ja-JP')}まで）
+                  </span>
+                )}
+                {planTargetPreset === 'custom' && planCustomDate && (
+                  <span className="plan-target-hint">
+                    （残り{planTargetDays}日）
+                  </span>
+                )}
+              </div>
               <div className="plan-input-wrapper">
                 <textarea
                   className="plan-goal-input"
-                  placeholder="例：2025年6月30日までにTOEIC 800点を取る、来月末までにポートフォリオサイトを作る、3ヶ月後までに引越しの準備をする（Ctrl+Enterで生成）"
+                  placeholder="例：TOEIC 800点を取る、ポートフォリオサイトを作る、引越しの準備をする（Ctrl+Enterで生成）"
                   value={planGoal}
                   onChange={e => {
                     setPlanGoal(e.target.value)
@@ -2632,7 +2835,7 @@ END:VCALENDAR`
                           console.log('[計画生成] Tavilyキーなし、Web検索スキップ')
                         }
                         console.log('[計画生成] AI計画生成開始', webContext ? '(Web情報あり)' : '(Web情報なし)')
-                        const result = await generatePlan(trimmedGoal, webContext)
+                        const result = await generatePlan(trimmedGoal, planTargetDays, webContext)
                         setPlanResult(result)
                         setPlanTasks(result.tasks)
                       } catch (err) {
@@ -2680,7 +2883,7 @@ END:VCALENDAR`
                         console.log('[計画生成] Tavilyキーなし、Web検索スキップ')
                       }
                       console.log('[計画生成] AI計画生成開始', webContext ? '(Web情報あり)' : '(Web情報なし)')
-                      const result = await generatePlan(trimmedGoal, webContext)
+                      const result = await generatePlan(trimmedGoal, planTargetDays, webContext)
                       setPlanResult(result)
                       setPlanTasks(result.tasks)
                     } catch (err) {
@@ -3778,12 +3981,127 @@ END:VCALENDAR`
           <div className="modal due-date-modal" onClick={e => e.stopPropagation()}>
             <h2>期日設定</h2>
             <p className="modal-description">タスクの期日と通知を設定します。</p>
-            <input
-              type="datetime-local"
-              className="due-date-input"
-              value={dueDateInput}
-              onChange={e => setDueDateInput(e.target.value)}
-            />
+
+            {/* 繰り返し設定（先に表示） */}
+            <div className="recurrence-settings">
+              <label className="setting-label">繰り返し:</label>
+              <select
+                className="recurrence-select"
+                value={dueDateRecurrenceType}
+                onChange={e => {
+                  setDueDateRecurrenceType(e.target.value as 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly')
+                  if (e.target.value !== 'weekly') setDueDateRecurrenceDays([])
+                }}
+              >
+                <option value="none">なし（単発）</option>
+                <option value="daily">毎日</option>
+                <option value="weekly">毎週</option>
+                <option value="monthly">毎月</option>
+                <option value="yearly">毎年</option>
+              </select>
+            </div>
+
+            {/* 通常タスクの場合：datetime-local */}
+            {dueDateRecurrenceType === 'none' && (
+              <input
+                type="datetime-local"
+                className="due-date-input"
+                value={dueDateInput}
+                onChange={e => setDueDateInput(e.target.value)}
+              />
+            )}
+
+            {/* 繰り返しタスクの場合：タスク入力画面と同様のUI */}
+            {dueDateRecurrenceType !== 'none' && (
+              <div className="recurrence-datetime-settings">
+                {/* 毎週の場合：曜日選択 */}
+                {dueDateRecurrenceType === 'weekly' && (
+                  <div className="recurrence-option">
+                    <label className="recurrence-option-label">📅 曜日</label>
+                    <div className="weekday-picker">
+                      {['日', '月', '火', '水', '木', '金', '土'].map((day, index) => (
+                        <label key={index} className={`weekday-btn ${dueDateRecurrenceDays.includes(index) ? 'active' : ''}`}>
+                          <input
+                            type="checkbox"
+                            checked={dueDateRecurrenceDays.includes(index)}
+                            onChange={e => {
+                              if (e.target.checked) {
+                                setDueDateRecurrenceDays([...dueDateRecurrenceDays, index].sort())
+                              } else {
+                                setDueDateRecurrenceDays(dueDateRecurrenceDays.filter(d => d !== index))
+                              }
+                            }}
+                          />
+                          {day}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 毎月の場合：日付選択 */}
+                {dueDateRecurrenceType === 'monthly' && (
+                  <div className="recurrence-option">
+                    <label className="recurrence-option-label">📆 日付</label>
+                    <select
+                      className="recurrence-day-select"
+                      value={dueDateMonthlyDay}
+                      onChange={e => setDueDateMonthlyDay(Number(e.target.value))}
+                    >
+                      {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                        <option key={day} value={day}>{day}日</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* 毎年の場合：月と日付選択 */}
+                {dueDateRecurrenceType === 'yearly' && (
+                  <>
+                    <div className="recurrence-option">
+                      <label className="recurrence-option-label">📆 月</label>
+                      <select
+                        className="recurrence-month-select"
+                        value={dueDateYearlyMonth}
+                        onChange={e => setDueDateYearlyMonth(Number(e.target.value))}
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map(month => (
+                          <option key={month} value={month}>{month}月</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="recurrence-option">
+                      <label className="recurrence-option-label">日付</label>
+                      <select
+                        className="recurrence-day-select"
+                        value={dueDateYearlyDay}
+                        onChange={e => setDueDateYearlyDay(Number(e.target.value))}
+                      >
+                        {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                          <option key={day} value={day}>{day}日</option>
+                        ))}
+                      </select>
+                    </div>
+                  </>
+                )}
+
+                {/* 時間選択（繰り返しタスク共通） */}
+                <div className="recurrence-option">
+                  <label className="recurrence-option-label">⏰ 時間</label>
+                  <input
+                    type="time"
+                    className="recurrence-time-input"
+                    value={dueDateRecurrenceTime}
+                    onChange={e => setDueDateRecurrenceTime(e.target.value)}
+                  />
+                </div>
+
+                <p className="recurrence-hint">
+                  繰り返しタスクは専用のリマインドメッセージで通知されます
+                </p>
+              </div>
+            )}
+
             <div className="notification-settings">
               <label className="notify-checkbox">
                 <input
@@ -3817,7 +4135,15 @@ END:VCALENDAR`
                 <button className="modal-btn danger" onClick={() => clearDueDate(dueDateTodoId)}>削除</button>
               )}
               <button className="modal-btn secondary" onClick={() => setShowDueDateModal(false)}>キャンセル</button>
-              <button className="modal-btn primary" onClick={setDueDate} disabled={!dueDateInput}>設定</button>
+              <button
+                className="modal-btn primary"
+                onClick={setDueDate}
+                disabled={
+                  dueDateRecurrenceType === 'none' ? !dueDateInput :
+                  dueDateRecurrenceType === 'weekly' ? dueDateRecurrenceDays.length === 0 :
+                  false
+                }
+              >設定</button>
             </div>
           </div>
         </div>
@@ -4047,6 +4373,9 @@ END:VCALENDAR`
               </div>
             )}
             <div className="calendar-footer">
+              <button className="modal-btn secondary" onClick={() => setShowImportModal(true)}>
+                📤 ICSインポート
+              </button>
               <button className="modal-btn secondary" onClick={exportAllToICS} disabled={todos.filter(t => t.dueDate).length === 0}>
                 📥 ICSエクスポート
               </button>
@@ -4054,6 +4383,98 @@ END:VCALENDAR`
                 📆 Googleカレンダーに追加
               </button>
               <button className="modal-btn primary" onClick={() => { setShowCalendar(false); setSelectedCalendarDay(null) }}>閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ICSインポートモーダル */}
+      {showImportModal && (
+        <div className="modal-overlay" onClick={() => { setShowImportModal(false); setImportResult(null) }}>
+          <div className="modal import-modal" onClick={e => e.stopPropagation()}>
+            <h2>Googleカレンダーからインポート</h2>
+            <p className="modal-description">
+              ICS形式のファイルをインポートして、カレンダーイベントをタスクに変換します。
+            </p>
+
+            <div className="import-instructions">
+              <h4>Googleカレンダーからエクスポートする方法</h4>
+              <ol>
+                <li><a href="https://calendar.google.com/calendar/u/0/r/settings/export" target="_blank" rel="noopener noreferrer">Googleカレンダーの設定 →</a> を開く</li>
+                <li>「エクスポート」をクリック</li>
+                <li>ダウンロードした .ics ファイルを下で選択</li>
+              </ol>
+            </div>
+
+            <div className="import-options">
+              <label className="import-option">
+                <input
+                  type="checkbox"
+                  checked={importOptions.importPast}
+                  onChange={e => setImportOptions(prev => ({ ...prev, importPast: e.target.checked }))}
+                />
+                過去のイベントもインポート
+              </label>
+              <label className="import-option">
+                <input
+                  type="checkbox"
+                  checked={importOptions.importCompleted}
+                  onChange={e => setImportOptions(prev => ({ ...prev, importCompleted: e.target.checked }))}
+                />
+                完了済みイベントもインポート
+              </label>
+            </div>
+
+            <div className="import-dropzone">
+              <input
+                type="file"
+                accept=".ics,.ical,text/calendar"
+                onChange={e => {
+                  const file = e.target.files?.[0]
+                  if (file) handleICSImport(file)
+                }}
+                id="ics-file-input"
+                style={{ display: 'none' }}
+              />
+              <label htmlFor="ics-file-input" className="dropzone-label">
+                <span className="dropzone-icon">📁</span>
+                <span className="dropzone-text">ICSファイルを選択</span>
+                <span className="dropzone-hint">.ics または .ical ファイル</span>
+              </label>
+            </div>
+
+            {importResult && (
+              <div className={`import-result ${importResult.success ? 'success' : 'error'}`}>
+                {importResult.success ? (
+                  <>
+                    <strong>{importResult.stats.imported}件のタスクをインポートしました</strong>
+                    {importResult.stats.skipped > 0 && (
+                      <p>
+                        {importResult.stats.skipped}件をスキップ
+                        {importResult.stats.skippedReasons.past > 0 && ` (過去: ${importResult.stats.skippedReasons.past}件)`}
+                        {importResult.stats.skippedReasons.completed > 0 && ` (完了済み: ${importResult.stats.skippedReasons.completed}件)`}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <strong>インポートに失敗しました</strong>
+                    {importResult.stats.total === 0 ? (
+                      <p>有効なイベントが見つかりませんでした</p>
+                    ) : (
+                      <p>
+                        {importResult.stats.skipped}件すべてスキップされました
+                        {importResult.stats.skippedReasons.past > 0 && ` (過去: ${importResult.stats.skippedReasons.past}件)`}
+                        {importResult.stats.skippedReasons.completed > 0 && ` (完了済み: ${importResult.stats.skippedReasons.completed}件)`}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="modal-actions">
+              <button className="modal-btn secondary" onClick={() => { setShowImportModal(false); setImportResult(null) }}>閉じる</button>
             </div>
           </div>
         </div>

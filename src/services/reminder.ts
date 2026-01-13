@@ -28,8 +28,10 @@ import {
   getPersonaPreset,
   buildSystemPrompt,
   buildReminderUserPrompt,
+  buildRecurrenceReminderUserPrompt,
   buildMorningUserPrompt,
   getFallbackReminderMessage,
+  getFallbackRecurrenceReminderMessage,
   getFallbackMorningGreeting,
   isCustomPresetId,
   getCustomPreset,
@@ -64,6 +66,13 @@ export interface DueDateNotification {
   followUpCount: number
 }
 
+// 繰り返しパターン（簡易版）
+export interface ReminderRecurrence {
+  type: 'daily' | 'weekly' | 'monthly' | 'yearly'
+  interval: number
+  daysOfWeek?: number[]
+}
+
 export interface ReminderTask {
   id: string
   title: string
@@ -74,6 +83,7 @@ export interface ReminderTask {
   completed?: boolean
   dueDateNotification?: DueDateNotification | null
   timeframe?: 'today' | 'week' | 'month' | 'year'
+  recurrence?: ReminderRecurrence | null  // 繰り返しパターン
 }
 
 function resolveDueDate(dueDate: ReminderTaskDueDate): Date | null {
@@ -122,11 +132,11 @@ export const AVAILABLE_MODELS = {
     { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku（レガシー）' },
   ],
   gemini: [
-    { id: 'gemini-2.5-flash-preview-09-2025', name: 'Gemini 2.5 Flash（最新・推論強化）' },
-    { id: 'gemini-2.5-flash-lite-preview-09-2025', name: 'Gemini 2.5 Flash Lite（最新・軽量）' },
-    { id: 'gemini-2.5-pro-exp-03-25', name: 'Gemini 2.5 Pro（最高性能）' },
-    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash（推奨・安定）' },
-    { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite（高速・低コスト）' },
+    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro（最高性能）' },
+    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash（推奨・推論強化）' },
+    { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite（軽量・高速）' },
+    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash（安定）' },
+    { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite（低コスト）' },
     { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash（レガシー）' },
     { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro（レガシー）' },
   ],
@@ -442,14 +452,18 @@ async function generateReminderMessageWithPersona(
 ): Promise<string> {
   const provider = resolveProvider(config)
   const dueDate = resolveDueDate(task.dueDate)
+  const isRecurrence = !!task.recurrence  // 繰り返しタスクかどうか
+  const recurrenceType = task.recurrence?.type || 'daily'
 
   // カスタム人格の場合
   if (config.personaType === 'custom' && config.customPersona) {
     const custom = config.customPersona
     const systemPrompt = custom.systemPrompt + (memoryContext ? `\n\n## 現在の状況\n${memoryContext}` : '')
+    // 繰り返しタスクの場合は追加情報をプロンプトに含める
+    const recurrenceHint = isRecurrence ? '\n※これは繰り返しタスク（習慣・ルーティン）です。「いつもの」「今日の分」など定期タスクであることを意識した言葉をかけてください。' : ''
     const userPrompt = custom.reminderPromptTemplate
       .replace('{taskTitle}', task.title)
-      .replace('{isOverdue}', isOverdue ? '期限切れ' : '期限が近い')
+      .replace('{isOverdue}', isOverdue ? '期限切れ' : '期限が近い') + recurrenceHint
 
     try {
       if (provider === 'gemini') {
@@ -472,7 +486,9 @@ async function generateReminderMessageWithPersona(
         return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\n【リマインド】「${task.title}」${isOverdue ? 'の期日が過ぎています！' : 'の時間です。'}`
       }
     }
-    return getFallbackReminderMessage(task.title, isOverdue)
+    return isRecurrence
+      ? getFallbackRecurrenceReminderMessage(task.title, isOverdue)
+      : getFallbackReminderMessage(task.title, isOverdue)
   }
 
   // プリセット人格の場合
@@ -483,10 +499,12 @@ async function generateReminderMessageWithPersona(
     const customPreset = getCustomPreset(presetId)
     if (customPreset) {
       const systemPrompt = customPreset.systemPrompt + (memoryContext ? `\n\n## 現在の状況\n${memoryContext}` : '')
+      // 繰り返しタスクの場合は追加情報をプロンプトに含める
+      const recurrenceHint = isRecurrence ? '\n※これは繰り返しタスク（習慣・ルーティン）です。「いつもの」「今日の分」など定期タスクであることを意識した言葉をかけてください。' : ''
       // ユーザープロンプト：追加指示があれば使い、なければ自動生成
       const userPrompt = customPreset.reminderPromptTemplate
-        ? `タスク「${task.title}」をリマインドしてください。状態: ${isOverdue ? '期限切れ' : '期限が近い'}。\n追加指示: ${customPreset.reminderPromptTemplate}`
-        : `タスク「${task.title}」をリマインドしてください。状態: ${isOverdue ? '期限切れです。急いでください。' : '期限が近づいています。'}短く2-3文で伝えてください。`
+        ? `タスク「${task.title}」をリマインドしてください。状態: ${isOverdue ? '期限切れ' : '期限が近い'}。\n追加指示: ${customPreset.reminderPromptTemplate}${recurrenceHint}`
+        : `タスク「${task.title}」をリマインドしてください。状態: ${isOverdue ? '期限切れです。急いでください。' : '期限が近づいています。'}短く2-3文で伝えてください。${recurrenceHint}`
 
       try {
         if (provider === 'gemini') {
@@ -508,12 +526,44 @@ async function generateReminderMessageWithPersona(
           return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\n【リマインド】「${task.title}」${isOverdue ? 'の期日が過ぎています！' : 'の時間です。'}`
         }
       }
-      return getFallbackReminderMessage(task.title, isOverdue)
+      return isRecurrence
+        ? getFallbackRecurrenceReminderMessage(task.title, isOverdue)
+        : getFallbackReminderMessage(task.title, isOverdue)
     }
   }
 
-  // かなえの場合は既存の関数を使用
+  // かなえの場合
   if (presetId === 'kanae') {
+    // 繰り返しタスクの場合は専用のプロンプトを使用
+    if (isRecurrence) {
+      const preset = getPersonaPreset('kanae')!
+      const systemPrompt = buildSystemPrompt(preset, 'recurrence-reminder', memoryContext)
+      const userPrompt = buildRecurrenceReminderUserPrompt(task.title, recurrenceType, isOverdue, !!memoryContext)
+
+      try {
+        if (provider === 'gemini') {
+          return await generateCustomPersonaMessageGemini(systemPrompt, userPrompt)
+        }
+        if (provider === 'claude') {
+          const result = await generateCustomPersonaMessageClaude(systemPrompt, userPrompt)
+          if (result) return result
+        }
+        if (provider === 'openai') {
+          const result = await generateCustomPersonaMessageOpenAI(systemPrompt, userPrompt)
+          if (result) return result
+        }
+      } catch (error) {
+        console.error('Kanae recurrence reminder message generation failed:', error)
+        const errorType = getApiErrorType(error)
+        if (errorType !== 'unknown') {
+          const errMsg = getApiErrorMessage(errorType, provider)
+          return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\n【習慣リマインド】「${task.title}」${isOverdue ? 'の時間が過ぎてますよ、先輩！' : 'の時間ですよ、先輩。今日もやりましょう。'}`
+        }
+      }
+      return getFallbackRecurrenceReminderMessage(task.title, isOverdue, 'kanae')
+    }
+
+    // 通常のリマインダー（既存の関数を使用）
     try {
       if (provider === 'openai') {
         return await generateKanaeReminderMessageOpenAI(task.title, dueDate, isOverdue, memoryContext)
@@ -536,11 +586,17 @@ async function generateReminderMessageWithPersona(
   // 他のプリセットの場合
   const preset = getPersonaPreset(presetId)
   if (!preset) {
-    return getFallbackReminderMessage(task.title, isOverdue, presetId)
+    return isRecurrence
+      ? getFallbackRecurrenceReminderMessage(task.title, isOverdue, presetId)
+      : getFallbackReminderMessage(task.title, isOverdue, presetId)
   }
 
-  const systemPrompt = buildSystemPrompt(preset, 'reminder', memoryContext)
-  const userPrompt = buildReminderUserPrompt(task.title, dueDate, isOverdue, !!memoryContext)
+  // 繰り返しタスクの場合は専用のプロンプトを使用
+  const promptVariant = isRecurrence ? 'recurrence-reminder' : 'reminder'
+  const systemPrompt = buildSystemPrompt(preset, promptVariant, memoryContext)
+  const userPrompt = isRecurrence
+    ? buildRecurrenceReminderUserPrompt(task.title, recurrenceType, isOverdue, !!memoryContext)
+    : buildReminderUserPrompt(task.title, dueDate, isOverdue, !!memoryContext)
 
   try {
     if (provider === 'gemini') {
@@ -560,11 +616,14 @@ async function generateReminderMessageWithPersona(
     const errorType = getApiErrorType(error)
     if (errorType !== 'unknown') {
       const errMsg = getApiErrorMessage(errorType, provider)
-      return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\n【リマインド】「${task.title}」${isOverdue ? 'の期日が過ぎています！' : 'の時間です。'}`
+      const reminderLabel = isRecurrence ? '習慣リマインド' : 'リマインド'
+      return `⚠️ ${errMsg.message}\n${errMsg.hint}\n※ ${getPersonaHint()}\n\n【${reminderLabel}】「${task.title}」${isOverdue ? 'の期日が過ぎています！' : 'の時間です。'}`
     }
   }
 
-  return getFallbackReminderMessage(task.title, isOverdue, presetId)
+  return isRecurrence
+    ? getFallbackRecurrenceReminderMessage(task.title, isOverdue, presetId)
+    : getFallbackReminderMessage(task.title, isOverdue, presetId)
 }
 
 // 朝の挨拶メッセージを生成
@@ -989,13 +1048,37 @@ export function getPlainNotificationMessage(
 export function getPersonaNotificationMessage(
   taskTitle: string,
   type: 'reminder' | 'overdue' | 'followup',
-  followUpCount: number = 0
+  followUpCount: number = 0,
+  isRecurrence: boolean = false
 ): NotificationMessage {
   const config = getKanaeConfig()
   const presetId = config.personaPresetId
 
   // かなえプリセットの場合
   if (presetId === 'kanae') {
+    // 繰り返しタスクの場合
+    if (isRecurrence) {
+      if (type === 'overdue') {
+        return {
+          title: '⚠️ 習慣タスク遅れ！',
+          body: `「${taskTitle}」今日の分やってませんよ、先輩！`
+        }
+      }
+      if (type === 'followup') {
+        const messages = [
+          { title: 'いつものやつ', body: `「${taskTitle}」まだですよ？` },
+          { title: 'ルーティン忘れ？', body: `「${taskTitle}」今日もやりましょう` },
+          { title: '習慣大事！', body: `「${taskTitle}」継続は力なりですよ！` },
+        ]
+        const index = Math.min(followUpCount, messages.length - 1)
+        return messages[index]
+      }
+      return {
+        title: 'いつものやつですよ',
+        body: `「${taskTitle}」の時間です、先輩。今日もやりましょう`
+      }
+    }
+    // 通常タスクの場合
     if (type === 'overdue') {
       return {
         title: '⚠️ 期日超過！',
@@ -1022,6 +1105,20 @@ export function getPersonaNotificationMessage(
 
   // 秘書プリセット
   if (presetId === 'secretary') {
+    // 繰り返しタスクの場合
+    if (isRecurrence) {
+      if (type === 'overdue') {
+        return {
+          title: '定例タスクのお知らせ',
+          body: `「${taskTitle}」本日分がまだでございます。`
+        }
+      }
+      return {
+        title: '定例タスクのお時間',
+        body: `「${taskTitle}」いつも通りお願いいたします。`
+      }
+    }
+    // 通常タスクの場合
     if (type === 'overdue') {
       return {
         title: '⚠️ 期限超過のお知らせ',
@@ -1045,6 +1142,20 @@ export function getPersonaNotificationMessage(
 
   // 元気な後輩プリセット
   if (presetId === 'energetic-kouhai') {
+    // 繰り返しタスクの場合
+    if (isRecurrence) {
+      if (type === 'overdue') {
+        return {
+          title: '先輩！ルーティン！',
+          body: `「${taskTitle}」今日の分まだですよ！`
+        }
+      }
+      return {
+        title: 'いつものやつです！',
+        body: `「${taskTitle}」今日もやっちゃいましょう！`
+      }
+    }
+    // 通常タスクの場合
     if (type === 'overdue') {
       return {
         title: '⚠️ 大変です先輩！',
@@ -1068,6 +1179,20 @@ export function getPersonaNotificationMessage(
 
   // 執事プリセット
   if (presetId === 'butler') {
+    // 繰り返しタスクの場合
+    if (isRecurrence) {
+      if (type === 'overdue') {
+        return {
+          title: '旦那様',
+          body: `「${taskTitle}」本日分がまだでございます。`
+        }
+      }
+      return {
+        title: '定例タスク',
+        body: `「${taskTitle}」いつも通りお願いいたします、旦那様。`
+      }
+    }
+    // 通常タスクの場合
     if (type === 'overdue') {
       return {
         title: 'ご主人様',
@@ -1553,7 +1678,7 @@ export function startReminderService(
             } catch (error) {
               console.error(`[Reminder] Desktop notification failed: ${task.title}`, error)
               // LLM失敗時はフォールバックメッセージを使用
-              const fallbackMsg = getPersonaNotificationMessage(task.title, notifyType, notifyFollowUpCount)
+              const fallbackMsg = getPersonaNotificationMessage(task.title, notifyType, notifyFollowUpCount, !!task.recurrence)
               try {
                 await showNotification(fallbackMsg.title, fallbackMsg.body)
                 markReminderSent(task.id, isOverdue, 'desktop')

@@ -1617,6 +1617,150 @@ textarea::placeholder {
   box-shadow: var(--shadow-focus);
 }
 
+/* Recurrence Settings in Due Date Modal */
+.recurrence-settings {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.recurrence-settings .setting-label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-sm);
+}
+
+.recurrence-select {
+  width: 100%;
+  padding: var(--space-sm) var(--space-md);
+  font-size: 14px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-gentle);
+}
+
+.recurrence-select:focus {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
+.weekday-picker {
+  display: flex;
+  gap: var(--space-xs);
+  margin-top: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.weekday-picker .weekday-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-spring);
+}
+
+.weekday-picker .weekday-btn:hover {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.weekday-picker .weekday-btn.active {
+  background: var(--accent-primary);
+  color: white;
+  border-color: var(--accent-primary);
+}
+
+.recurrence-hint {
+  margin-top: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--accent-primary);
+}
+
+/* Recurrence DateTime Settings */
+.recurrence-datetime-settings {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.recurrence-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.recurrence-option:last-of-type {
+  margin-bottom: 0;
+}
+
+.recurrence-option-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  min-width: 60px;
+}
+
+.recurrence-day-select,
+.recurrence-month-select {
+  padding: var(--space-sm) var(--space-md);
+  font-size: 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  cursor: pointer;
+  min-width: 100px;
+}
+
+.recurrence-day-select:focus,
+.recurrence-month-select:focus {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
+.recurrence-time-input {
+  padding: var(--space-sm) var(--space-md);
+  font-size: 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  min-width: 120px;
+}
+
+.recurrence-time-input:focus {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
+.recurrence-datetime-settings .weekday-picker {
+  margin-top: 0;
+}
+
+.recurrence-datetime-settings .recurrence-hint {
+  margin-top: var(--space-md);
+  margin-bottom: 0;
+}
+
 /* Reminder Modal */
 .reminder-modal {
   max-width: 380px;
@@ -2535,7 +2679,135 @@ kbd {
 }
 
 .calendar-footer .modal-btn.secondary {
-  margin-right: auto;
+  margin-right: 0;
+}
+
+/* ICS Import Modal */
+.import-modal {
+  max-width: 480px;
+}
+
+.import-instructions {
+  margin: var(--space-md) 0;
+  padding: var(--space-md);
+  background: var(--bg-base);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--accent-primary);
+}
+
+.import-instructions h4 {
+  margin: 0 0 var(--space-sm) 0;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.import-instructions ol {
+  margin: 0;
+  padding-left: var(--space-lg);
+}
+
+.import-instructions li {
+  margin: var(--space-xs) 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.import-instructions a {
+  color: var(--accent-primary);
+  text-decoration: none;
+}
+
+.import-instructions a:hover {
+  text-decoration: underline;
+}
+
+.import-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: var(--space-md) 0;
+}
+
+.import-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.import-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+.import-dropzone {
+  margin: var(--space-md) 0;
+}
+
+.dropzone-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xl);
+  background: var(--bg-base);
+  border: 2px dashed var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-gentle);
+}
+
+.dropzone-label:hover {
+  border-color: var(--accent-primary);
+  background: var(--accent-ghost);
+}
+
+.dropzone-icon {
+  font-size: 32px;
+}
+
+.dropzone-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.dropzone-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.import-result {
+  margin: var(--space-md) 0;
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+}
+
+.import-result.success {
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #22c55e;
+}
+
+.import-result.error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+.import-result strong {
+  display: block;
+  margin-bottom: var(--space-xs);
+}
+
+.import-result p {
+  margin: 0;
+  font-size: 12px;
+  opacity: 0.8;
 }
 
 /* ============================================
@@ -4458,6 +4730,69 @@ kbd {
   margin: 0 0 var(--space-md) 0;
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.plan-target-date-section {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
+}
+
+.plan-target-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.plan-target-select {
+  padding: 6px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-gentle);
+}
+
+.plan-target-select:hover {
+  border-color: var(--accent-primary);
+}
+
+.plan-target-select:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(92, 124, 250, 0.2);
+}
+
+.plan-target-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.plan-target-date-input {
+  padding: 6px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-gentle);
+}
+
+.plan-target-date-input:hover {
+  border-color: var(--accent-primary);
+}
+
+.plan-target-date-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(92, 124, 250, 0.2);
 }
 
 .plan-input-wrapper {

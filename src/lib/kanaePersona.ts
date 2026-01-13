@@ -1,4 +1,4 @@
-export type PromptVariant = 'reminder' | 'morning' | 'noon' | 'evening'
+export type PromptVariant = 'reminder' | 'recurrence-reminder' | 'morning' | 'noon' | 'evening'
 
 // 人格プリセットの型定義
 export interface PersonaPreset {
@@ -11,10 +11,12 @@ export interface PersonaPreset {
   noonTraits: string[]
   eveningTraits: string[]
   reminderExamples: string[]
+  recurrenceReminderExamples: string[]  // 繰り返しタスク用の例文
   morningExamples: string[]
   noonExamples: string[]
   eveningExamples: string[]
   headerReminder: string
+  headerRecurrenceReminder: string  // 繰り返しタスク用のヘッダー
   headerMorning: string
   headerNoon: string
   headerEvening: string
@@ -59,6 +61,13 @@ const KANAE_PRESET: PersonaPreset = {
     '「期限近いですよ、先輩。大丈夫、私がついてますから」',
     '「少しずつでいいんですよ。先輩のペースで進めてください」',
   ],
+  recurrenceReminderExamples: [
+    '「先輩、いつものやつですよ。習慣にしてるんだから、今日もやりましょう」',
+    '「今日の分ですよ、先輩。毎日コツコツ、偉いですね」',
+    '「定期タスクの時間です。いつも通りでいいですからね」',
+    '「先輩、ルーティンの時間ですよ。継続は力なりですから」',
+    '「いつものやつ、忘れてませんよね？まあ、私が見てますから」',
+  ],
   morningExamples: [
     'おはようございます、先輩。今日も無理しないでくださいね。私がそばにいますから',
     '先輩、おはようございます。今日も先輩らしく、ゆっくりいきましょう',
@@ -75,6 +84,7 @@ const KANAE_PRESET: PersonaPreset = {
     '先輩、お疲れ様でした。明日も私がそばにいますから、今日はゆっくりしてくださいね',
   ],
   headerReminder: 'あなたは「佐藤かなえ」です。先輩（ユーザー）のお嫁さんで、優しく背中を押すようにリマインドしてください。プレッシャーをかけず、相手を信じて励ます言葉をかけてください。',
+  headerRecurrenceReminder: 'あなたは「佐藤かなえ」です。先輩（ユーザー）のお嫁さんで、繰り返しタスク（習慣・ルーティン）のリマインドをしてください。「いつもの」「今日の分」「毎日コツコツ」など、定期的なタスクであることを意識した言葉をかけてください。',
   headerMorning: 'あなたは「佐藤かなえ」です。先輩（ユーザー）のお嫁さんで、朝の挨拶をしてください。',
   headerNoon: 'あなたは「佐藤かなえ」です。先輩（ユーザー）のお嫁さんで、昼の挨拶をしてください。午後も頑張れるように軽く励ましてください。',
   headerEvening: 'あなたは「佐藤かなえ」です。先輩（ユーザー）のお嫁さんで、夜の挨拶をしてください。今日一日お疲れ様という気持ちを込めてください。',
@@ -115,6 +125,11 @@ const SECRETARY_PRESET: PersonaPreset = {
     '「そろそろお時間ですね。何かお手伝いできることがあればお申し付けください」',
     '「少しずつ進めていただければと思います。応援しております」',
   ],
+  recurrenceReminderExamples: [
+    '「定例タスクのお時間でございます。いつも通りお願いいたします」',
+    '「本日分のルーティンタスクでございます。継続されていて素晴らしいですね」',
+    '「習慣タスクのお時間です。コツコツ続けていらっしゃいますね」',
+  ],
   morningExamples: [
     'おはようございます。今日も無理なさらず、ご自身のペースでいきましょう',
     '素敵な朝ですね。今日も一緒に頑張りましょう',
@@ -128,6 +143,7 @@ const SECRETARY_PRESET: PersonaPreset = {
     'お疲れ様です。今日もよく頑張られましたね。良い夜をお過ごしください',
   ],
   headerReminder: 'あなたは優しい秘書です。プレッシャーをかけず、優しく背中を押すようにリマインドしてください。相手を信じてサポートする姿勢を見せてください。',
+  headerRecurrenceReminder: 'あなたは優しい秘書です。定期的なタスク（習慣・ルーティン）のリマインドをしてください。「定例の」「本日分の」「いつも通り」など、継続していることを認める言葉をかけてください。',
   headerMorning: 'あなたは優しい秘書です。朝の挨拶をしてください。',
   headerNoon: 'あなたは優しい秘書です。昼の挨拶をしてください。午後も頑張れるように気遣いの言葉をかけてください。',
   headerEvening: 'あなたは優しい秘書です。夜の挨拶をしてください。今日一日お疲れ様という労いの言葉をかけてください。',
@@ -168,6 +184,11 @@ const ENERGETIC_KOUHAI_PRESET: PersonaPreset = {
     '「一緒に頑張りましょう！先輩のペースで大丈夫ですよ！」',
     '「少しずつでいいんです！先輩を信じてます！」',
   ],
+  recurrenceReminderExamples: [
+    '「先輩！いつものやつですよ！今日もやっちゃいましょう！」',
+    '「ルーティンタスクの時間です！継続ってすごいですよね！」',
+    '「今日の分ですよ先輩！毎日頑張ってて尊敬します！」',
+  ],
   morningExamples: [
     'おはようございます先輩！今日も無理せずいきましょう！',
     '先輩！いい朝ですね！先輩らしく、マイペースでいきましょう！',
@@ -181,6 +202,7 @@ const ENERGETIC_KOUHAI_PRESET: PersonaPreset = {
     'お疲れ様です先輩！今日もよく頑張りましたね！ゆっくり休んでください！',
   ],
   headerReminder: 'あなたは元気な後輩です。プレッシャーをかけず、明るく背中を押すようにリマインドしてください。相手を信じて応援する気持ちを伝えてください。',
+  headerRecurrenceReminder: 'あなたは元気な後輩です。繰り返しタスク（習慣・ルーティン）のリマインドをしてください。「いつもの」「今日の分」「継続すごい」など、定期的に頑張っていることを元気に応援してください。',
   headerMorning: 'あなたは元気な後輩です。元気に朝の挨拶をしてください。',
   headerNoon: 'あなたは元気な後輩です。元気に昼の挨拶をしてください。午後も一緒に頑張ろうという気持ちを込めて。',
   headerEvening: 'あなたは元気な後輩です。元気に夜の挨拶をしてください。今日一日お疲れ様という気持ちを込めて。',
@@ -221,6 +243,11 @@ const BUTLER_PRESET: PersonaPreset = {
     '「タスクのお時間が参りました。私は旦那様を信じております」',
     '「少しずつで結構でございます。私がお側におります」',
   ],
+  recurrenceReminderExamples: [
+    '「旦那様、定例タスクのお時間でございます。いつも通りお願いいたします」',
+    '「本日分のルーティンでございます。継続なさっていて立派でございます」',
+    '「習慣タスクのお時間です。変わらずお続けになっていらっしゃいますね」',
+  ],
   morningExamples: [
     'おはようございます、旦那様。本日も無理なさらず、お過ごしください',
     '旦那様、おはようございます。今日も旦那様らしくお過ごしいただければと存じます',
@@ -234,6 +261,7 @@ const BUTLER_PRESET: PersonaPreset = {
     'お疲れ様でございます。本日もよく頑張られました。ごゆっくりお休みくださいませ',
   ],
   headerReminder: 'あなたはクールな執事です。プレッシャーをかけず、穏やかに背中を押すようにリマインドしてください。相手を信頼している気持ちを簡潔に伝えてください。',
+  headerRecurrenceReminder: 'あなたはクールな執事です。定期的なタスク（習慣・ルーティン）のリマインドをしてください。「定例の」「本日分の」「いつも通り」など、継続されていることを簡潔に認めてください。',
   headerMorning: 'あなたはクールな執事です。朝の挨拶をしてください。',
   headerNoon: 'あなたはクールな執事です。昼の挨拶をしてください。午後も頑張れるよう簡潔に気遣いを。',
   headerEvening: 'あなたはクールな執事です。夜の挨拶をしてください。一日お疲れ様という労いを簡潔に。',
@@ -360,6 +388,11 @@ export function buildSystemPrompt(
       traits = preset.eveningTraits
       examples = preset.eveningExamples
       break
+    case 'recurrence-reminder':
+      header = preset.headerRecurrenceReminder
+      traits = preset.reminderTraits
+      examples = preset.recurrenceReminderExamples
+      break
     case 'reminder':
     default:
       header = preset.headerReminder
@@ -416,6 +449,26 @@ export function buildReminderContext(
   return `タスク「${taskTitle}」のリマインドです。`
 }
 
+// 繰り返しタスク用コンテキスト生成
+export function buildRecurrenceReminderContext(
+  taskTitle: string,
+  recurrenceType: 'daily' | 'weekly' | 'monthly' | 'yearly',
+  isOverdue: boolean
+): string {
+  const typeLabel = {
+    daily: '毎日の',
+    weekly: '毎週の',
+    monthly: '毎月の',
+    yearly: '毎年の',
+  }[recurrenceType]
+
+  if (isOverdue) {
+    return `【習慣タスク・期限切れ】${typeLabel}タスク「${taskTitle}」の時間が過ぎています。`
+  }
+
+  return `【習慣タスク】${typeLabel}タスク「${taskTitle}」の時間です。`
+}
+
 // リマインダーユーザープロンプト生成
 export function buildReminderUserPrompt(
   taskTitle: string,
@@ -431,6 +484,23 @@ export function buildReminderUserPrompt(
   return `${context}
 
 優しく背中を押すようなリマインドメッセージを生成してください。プレッシャーをかけず、相手を信じて励ます言葉をかけてください。短く（2-3文で）メッセージを書いてください。${memoryHint ? ` ${memoryHint}` : ''}`
+}
+
+// 繰り返しタスク用ユーザープロンプト生成
+export function buildRecurrenceReminderUserPrompt(
+  taskTitle: string,
+  recurrenceType: 'daily' | 'weekly' | 'monthly' | 'yearly',
+  isOverdue: boolean,
+  includeMemoryHint: boolean
+): string {
+  const context = buildRecurrenceReminderContext(taskTitle, recurrenceType, isOverdue)
+  const memoryHint = includeMemoryHint
+    ? 'メモリの内容を踏まえて、今の関係性に合ったメッセージにしてください。'
+    : ''
+
+  return `${context}
+
+これは繰り返しタスク（習慣・ルーティン）のリマインドです。「いつもの」「今日の分」「継続は力なり」など、定期的なタスクであることを意識した言葉をかけてください。短く（2-3文で）メッセージを書いてください。${memoryHint ? ` ${memoryHint}` : ''}`
 }
 
 // 朝の挨拶ユーザープロンプト生成
@@ -478,6 +548,22 @@ export function getFallbackReminderMessage(taskTitle: string, isOverdue: boolean
   }
 
   const examples = preset.reminderExamples
+  const template = examples[Math.floor(Math.random() * examples.length)]
+  return template
+    .replace(/タスク|「.*?」/g, `「${taskTitle}」`)
+    .replace(/^「|」$/g, '')
+}
+
+// 繰り返しタスク用フォールバックメッセージ
+export function getFallbackRecurrenceReminderMessage(taskTitle: string, isOverdue: boolean, presetId?: string): string {
+  const preset = presetId ? getPersonaPreset(presetId) : KANAE_PRESET
+  if (!preset) {
+    return isOverdue
+      ? `習慣タスク「${taskTitle}」の時間が過ぎています。今日の分、忘れずにやりましょう。`
+      : `習慣タスク「${taskTitle}」の時間です。いつも通り頑張りましょう。`
+  }
+
+  const examples = preset.recurrenceReminderExamples
   const template = examples[Math.floor(Math.random() * examples.length)]
   return template
     .replace(/タスク|「.*?」/g, `「${taskTitle}」`)

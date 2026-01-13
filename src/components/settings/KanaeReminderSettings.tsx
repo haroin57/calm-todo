@@ -545,6 +545,30 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
       {/* リマインダー設定 */}
       <div className="settings-subsection">
         <h4>リマインダー</h4>
+
+        {/* 重要な注意事項 */}
+        <div className="startup-warning">
+          <div className="warning-icon">⚠️</div>
+          <div className="warning-content">
+            <strong>通知を受け取るには、アプリを常に起動しておく必要があります</strong>
+            <p>
+              アプリを閉じると通知が届きません。
+              Windowsのスタートアップに登録して自動起動させることをおすすめします。
+            </p>
+            <details className="startup-help">
+              <summary>スタートアップへの登録方法</summary>
+              <ol>
+                <li><kbd>Win</kbd> + <kbd>R</kbd> を押して「ファイル名を指定して実行」を開く</li>
+                <li><code>shell:startup</code> と入力してEnter</li>
+                <li>開いたフォルダに、このアプリのショートカットをコピー</li>
+              </ol>
+              <p className="startup-tip">
+                ※ ショートカットは、アプリの実行ファイル（.exe）を右クリック →「ショートカットの作成」で作れます
+              </p>
+            </details>
+          </div>
+        </div>
+
         <div className="settings-row">
           <label className="settings-label">
             <input
@@ -1290,6 +1314,79 @@ export function KanaeReminderSettings({ onClose, onSaved, embedded = false, save
         }
         .desktop-notification-test button {
           margin-top: 8px;
+        }
+        .startup-warning {
+          display: flex;
+          gap: 12px;
+          padding: 12px;
+          margin-bottom: 16px;
+          background: linear-gradient(135deg, rgba(251, 191, 36, 0.1) 0%, rgba(245, 158, 11, 0.15) 100%);
+          border: 1px solid rgba(245, 158, 11, 0.3);
+          border-radius: 8px;
+          border-left: 4px solid #f59e0b;
+        }
+        .warning-icon {
+          font-size: 20px;
+          flex-shrink: 0;
+        }
+        .warning-content {
+          flex: 1;
+          font-size: 13px;
+          line-height: 1.5;
+        }
+        .warning-content strong {
+          display: block;
+          color: #b45309;
+          margin-bottom: 4px;
+        }
+        .warning-content p {
+          margin: 0;
+          color: var(--text-secondary);
+        }
+        .startup-help {
+          margin-top: 10px;
+          padding: 10px;
+          background: var(--bg-secondary);
+          border-radius: 6px;
+        }
+        .startup-help summary {
+          cursor: pointer;
+          font-weight: 500;
+          color: var(--accent-primary);
+          padding: 4px 0;
+        }
+        .startup-help summary:hover {
+          text-decoration: underline;
+        }
+        .startup-help ol {
+          margin: 10px 0;
+          padding-left: 20px;
+        }
+        .startup-help li {
+          margin: 6px 0;
+          line-height: 1.6;
+        }
+        .startup-help kbd {
+          display: inline-block;
+          padding: 2px 6px;
+          font-size: 11px;
+          font-family: var(--font-mono, monospace);
+          background: var(--bg-tertiary);
+          border: 1px solid var(--border-color);
+          border-radius: 3px;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+        }
+        .startup-help code {
+          background: var(--bg-tertiary);
+          padding: 2px 6px;
+          border-radius: 3px;
+          font-size: 12px;
+        }
+        .startup-tip {
+          margin-top: 8px;
+          font-size: 12px;
+          color: var(--text-tertiary);
+          font-style: italic;
         }
       `}</style>
     </div>

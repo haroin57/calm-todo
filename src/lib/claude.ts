@@ -132,7 +132,7 @@ function isPlanError(result: PlanResult | PlanError): result is PlanError {
   return typeof (result as PlanError).error === 'string'
 }
 
-export async function generatePlanClaude(goal: string, webSearchContext?: string): Promise<PlanResult> {
+export async function generatePlanClaude(goal: string, targetDays: number, webSearchContext?: string): Promise<PlanResult> {
   const apiKey = getClaudeApiKey()
 
   if (!apiKey) {
@@ -140,15 +140,21 @@ export async function generatePlanClaude(goal: string, webSearchContext?: string
   }
 
   const today = new Date()
+  const targetDate = new Date(today.getTime() + targetDays * 24 * 60 * 60 * 1000)
   const dayNames = ['日', '月', '火', '水', '木', '金', '土']
   const dayOfWeek = dayNames[today.getDay()]
+  const targetDayOfWeek = dayNames[targetDate.getDay()]
 
   let userPrompt = `## 達成したい目標
 ${goal}
 
+## 期限
+- 目標達成日: ${targetDate.toLocaleDateString('ja-JP')}（${targetDayOfWeek}曜日）
+- 残り日数: ${targetDays}日
+
 ## 現在の状況
 - 今日: ${today.toLocaleDateString('ja-JP')}（${dayOfWeek}曜日）
-- 作業可能時間: 1日あたり2?4時間`
+- 作業可能時間: 1日あたり2〜4時間`
 
   if (webSearchContext) {
     userPrompt += `
