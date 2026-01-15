@@ -216,7 +216,8 @@ export const PLAN_SYSTEM_PROMPT = `目標達成の計画立案エキスパート
       "name": "リソース名（教材、ツール、サービスなど）",
       "type": "book" | "website" | "tool" | "service" | "community",
       "description": "概要と使い方",
-      "cost": "無料 / 有料（金額）"
+      "cost": "無料 / 有料（金額）",
+      "url": "公式サイトや詳細ページのURL（わかる場合のみ）"
     }
   ],
   "tips": [

@@ -12,6 +12,27 @@ export interface TodoComment {
   createdAt: number
 }
 
+// ラベル定義型
+export interface LabelDefinition {
+  id: string
+  name: string
+  color: string  // HEX形式 (e.g., "#ff6b6b")
+  order: number
+}
+
+// デフォルトラベルカラー
+export const LABEL_COLORS = [
+  '#ef4444', // 赤
+  '#f97316', // オレンジ
+  '#eab308', // 黄色
+  '#22c55e', // 緑
+  '#06b6d4', // シアン
+  '#3b82f6', // 青
+  '#8b5cf6', // 紫
+  '#ec4899', // ピンク
+  '#6b7280', // グレー
+] as const
+
 // プロジェクト型
 export interface Project {
   id: string

@@ -168,6 +168,7 @@ export interface PlanResource {
   type: "book" | "website" | "tool" | "service" | "community"
   description: string
   cost: string
+  url?: string  // リソースへのリンク（任意）
 }
 
 export interface PlanResult {

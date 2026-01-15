@@ -5233,6 +5233,22 @@ kbd {
   color: var(--text-tertiary);
 }
 
+.resource-link-btn {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: var(--accent-primary);
+  color: white;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-gentle);
+  white-space: nowrap;
+}
+
+.resource-link-btn:hover {
+  background: var(--accent-secondary);
+  transform: translateX(2px);
+}
+
 .resource-description {
   margin: 0;
   font-size: 12px;
@@ -6312,18 +6328,25 @@ kbd {
   color: var(--accent-primary);
 }
 
-.guide-row .priority-badge {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: var(--radius-xs);
-  color: white;
+.priority-guide .guide-row {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  gap: 8px;
 }
 
-.guide-row .priority-badge.p1 { background: #dc3545; }
-.guide-row .priority-badge.p2 { background: #fd7e14; }
-.guide-row .priority-badge.p3 { background: #ffc107; color: #333; }
-.guide-row .priority-badge.p4 { background: #6c757d; }
+.priority-guide .priority-badge {
+  opacity: 1;
+  text-align: center;
+}
+
+.priority-guide .priority-desc {
+  color: var(--text-secondary);
+}
+
+.priority-guide .priority-pts {
+  font-weight: 600;
+  color: var(--accent-primary);
+}
 
 .guide-note {
   font-size: 12px;

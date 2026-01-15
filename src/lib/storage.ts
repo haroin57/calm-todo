@@ -6,6 +6,7 @@ import type {
   ActivityLog,
   KarmaStats,
   Priority,
+  LabelDefinition,
 } from '@/types/todo'
 
 // Storage keys
@@ -19,6 +20,7 @@ export const PROJECTS_KEY = 'calm-todo-projects'
 export const ACTIVITY_LOG_KEY = 'calm-todo-activity'
 export const KARMA_KEY = 'calm-todo-karma'
 export const LABELS_KEY = 'calm-todo-labels'
+export const LABEL_DEFINITIONS_KEY = 'calm-todo-label-definitions'
 
 // Custom Filters
 export function loadCustomFilters(): CustomFilter[] {
@@ -307,4 +309,19 @@ export function loadLabels(): string[] {
 
 export function saveLabels(labels: string[]) {
   localStorage.setItem(LABELS_KEY, JSON.stringify(labels))
+}
+
+// Label Definitions（色付きラベル定義）
+export function loadLabelDefinitions(): LabelDefinition[] {
+  try {
+    const saved = localStorage.getItem(LABEL_DEFINITIONS_KEY)
+    if (!saved) return []
+    return JSON.parse(saved)
+  } catch {
+    return []
+  }
+}
+
+export function saveLabelDefinitions(definitions: LabelDefinition[]) {
+  localStorage.setItem(LABEL_DEFINITIONS_KEY, JSON.stringify(definitions))
 }

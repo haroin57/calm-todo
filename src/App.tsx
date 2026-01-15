@@ -1,5 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useUIState } from './hooks/useUIState'
+import { useKarma } from './hooks/useKarma'
+import { useProjects } from './hooks/useProjects'
+import { useCalendar } from './hooks/useCalendar'
+import { usePlanning, INTRO_SAMPLE_PLAN } from './hooks/usePlanning'
 import { KanaeReminderSettings } from './components/settings/KanaeReminderSettings'
+import { BoardView } from './components/BoardView'
+import Sidebar from './components/Sidebar'
 import { decomposeTask, getKanaeConfig, startReminderService, stopReminderService, type ReminderTask, type Subtask, type NotificationResult } from './services/reminder'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -7,7 +14,7 @@ import { open } from '@tauri-apps/plugin-shell'
 
 import { parseNaturalLanguage, getNextRecurrenceDate, formatRecurrence, type RecurrencePattern } from './lib/parseNaturalLanguage'
 import { importICSToTodos, type ImportStats } from './lib/icsParser'
-import { generatePlan, type PlanTask, type PlanResult } from './services/plan'
+// generatePlan, PlanTask, PlanResult は usePlanning から取得
 import { searchWithTavily, formatSearchResultsForPrompt, getTavilyApiKey } from './lib/tavily'
 import { getApiKey as getOpenAiApiKey } from './lib/openai'
 import { getClaudeApiKey } from './lib/claude'
@@ -25,12 +32,13 @@ import type {
   Section,
   Project,
   CustomFilter,
-  ActivityLog,
-  KarmaStats,
+  // ActivityLog, KarmaStats は useKarma 経由で使用
   Priority,
   Timeframe,
-  ViewTimeframe,
+  // ViewTimeframe は useUIState / usePlanning 経由で使用
+  LabelDefinition,
 } from '@/types/todo'
+import { LABEL_COLORS } from '@/types/todo'
 
 // Storage utilities
 import {
@@ -39,27 +47,18 @@ import {
   saveCustomFilters,
   loadSections,
   saveSections,
-  loadProjects,
+  saveLabels,
   saveProjects,
-  loadActivityLog,
-  saveActivityLog,
-  loadKarma,
-  saveKarma,
-  calculateLevel,
-  getLevelName,
+  saveLabelDefinitions,
+  // loadProjects, loadLabels, loadLabelDefinitions は useProjects 経由で使用
+  // カルマ・ビューモード関連は useKarma / useUIState 経由で使用
   getPointsForNextLevel,
   getPointsForCurrentLevel,
-  PRIORITY_POINTS,
-  getDifficultyBonus,
   LEVEL_THRESHOLDS,
-  loadViewMode,
-  saveViewMode,
   loadTodos,
   saveTodos,
   loadCollapsed,
   saveCollapsed,
-  loadLabels,
-  saveLabels,
 } from '@/lib/storage'
 
 // Utility functions
@@ -70,106 +69,153 @@ import {
   loadBackup,
 } from '@/lib/utils'
 
-// イントロ用サンプル計画データ（3年でGoogle新卒内定を目指す例）
-const INTRO_SAMPLE_PLAN: PlanResult = {
-  currentState: "2026/1/12時点で、1日2〜4時間の継続学習時間を確保できる。Google新卒内定を3年後に目指しており、選考情報（体験談・落選談・難易度）を一部把握している。",
-  goalState: "2029/1/12までにGoogle（想定：Google JapanのSWE/新卒枠）から新卒内定を獲得する。書類（CV/ES）→オンラインコーディングテスト→面接（技術面接複数回＋行動面接）を突破できる実力と実績を揃える。",
-  gap: "①コーディングテスト/技術面接で安定して解けるアルゴリズム・データ構造の演習量と復習サイクル（目安：LeetCode/AtCoder合計300〜500問＋復習）②CS基礎（OS/ネットワーク/DB/計算量）③実務・開発実績（インターン、プロジェクト、OSS等）④行動面接（STARで語れるエピソード15〜20個）⑤応募書類（英語CV含む）と応募戦略（インターン経由/リファラル等）の整備。",
-  feasibility: {
-    verdict: "CHALLENGING",
-    availableHours: 1638,
-    requiredHours: 1900,
-    calculation: "期限=3年後(2029/1/12)まで。平日稼働のみ・週末休み前提。稼働日=約3年×52週×5日=780日。1日平均3時間（2〜4hの中央値）×稼働率0.7（割り込み/体調/試験等）=2.1h/日。利用可能総時間=780×2.1=1638h。必要時間は、体験談ベースの演習量（LeetCode150+AtCoder100+AlgoExpert100=約350問）を'初見は2〜3倍かかる'前提で、(①アルゴ/DS演習・復習 900h) + (②CS基礎 250h) + (③開発実績/ポートフォリオ 350h) + (④面接対策(模擬/STAR) 150h) + (⑤応募準備/ネットワーキング 100h) + バッファ30%（約450h）≒合計1900hと見積もり。",
-    adjustment: "達成確度を上げるには、(A)平日平均を3.5〜4hに寄せる、または(B)月1回だけ週末に半日(4h)確保、または(C)目標を『Google級（BigTech/外資SaaS含む）複数社内定→Google最優先』に広げて確率を上げる。最短で現実的なのは(A)+(C)。"
-  },
-  risks: [
-    "スケジュールリスク: 学業/研究/アルバイト/サークル等で平日2〜4hが崩れ、復習が回らず演習が'解きっぱなし'になる。",
-    "技術的リスク: アルゴリズムは解けても、面接での説明（思考の言語化）・バグ修正・計算量説明が弱く評価が伸びない。",
-    "外部リスク: 新卒募集枠・採用人数・選考プロセスが年度で変動し、準備していた型が一部通用しない。",
-    "競争リスク: 採用倍率が極めて高い（約0.2%という言及あり）ため、実力が十分でも運・タイミング・枠の影響で落ちる可能性が高い。",
-    "精神コストリスク: 長期戦で不合格/停滞が続くと学習が止まる。短期の'詰め込み'に偏ると燃え尽きやすい。"
-  ],
-  costs: [
-    "時間コスト: 3年間で平日780日×2〜4hの継続。演習（解く）だけでなく復習・記録・模擬面接に時間が必要。",
-    "金銭コスト: LeetCode Premium数ヶ月課金の可能性、AlgoExpert/SystemsExpert、模擬面接（Exponent等の有料枠）、書籍（EPI/CCI等）で合計数万円〜十数万円規模になり得る。",
-    "精神コスト: 毎日学習＋定期的な模擬面接の緊張、落選時のダメージ、周囲比較によるストレス。",
-    "機会コスト: インターン/開発に時間を割くため、他活動（バイト/趣味/単位の余裕）を削る必要が出る。"
-  ],
-  summary: "3年を「基礎固め→実績作り→選考特化」の3フェーズに分け、アルゴ/DSをLeetCode・AtCoder中心に300〜500問規模で'復習込み'で回しつつ、インターン/プロジェクトでCVに書ける成果を作る。最後の6〜9ヶ月は、技術面接（45分×複数回）と行動面接（STAR 15〜20本）を模擬面接で仕上げ、応募・リファラル・インターン経由を含む複線で内定確率を最大化する。",
-  estimatedDays: 780,
-  tasks: [
-    {
-      title: "目標をSWE新卒に具体化し合格条件を定義する",
-      description: "Googleの目標職種を『Google Japan SWE新卒（第一志望）』として明文化し、合格条件を数値化する（例：LeetCode合計300問/うちMedium200、AtCoder100、STARエピソード20本、模擬面接10回、CV1ページ完成）。",
-      priority: "high",
-      daysFromStart: 0,
-      estimatedMinutes: 90
-    },
-    {
-      title: "選考プロセスを体験談から逆算してチェックリスト化する",
-      description: "体験談/記事から、選考ステップ・必要演習量・失敗点を抜き出してチェックリスト化する。",
-      priority: "high",
-      daysFromStart: 1,
-      estimatedMinutes: 120
-    },
-    {
-      title: "LeetCodeとAtCoderの学習環境を整備する",
-      description: "LeetCodeとAtCoderにアカウント作成/整備し、使用言語を1つに固定。提出コードをGitHubに連携し、進捗記録用スプレッドシートを作る。",
-      priority: "high",
-      daysFromStart: 2,
-      estimatedMinutes: 120
-    },
-    {
-      title: "アルゴリズム学習の最初の2週間スプリントを作成する",
-      description: "2週間で『配列/文字列・ハッシュ・二分探索・スタック/キュー』を回す計画を作る（平日10日×各日2問=20問＋復習2日）。",
-      priority: "high",
-      daysFromStart: 3,
-      estimatedMinutes: 90
-    },
-    {
-      title: "LeetCodeを2問解き、復習テンプレを確立する",
-      description: "LeetCodeでEasy〜Mediumを2問解き、解法を『問題要約→方針→計算量→落とし穴→別解』で200〜400字にまとめる。",
-      priority: "high",
-      daysFromStart: 4,
-      estimatedMinutes: 120
-    }
-  ],
-  resources: [
-    {
-      name: "外資就活ドットコム（Google体験談）",
-      type: "website",
-      description: "Googleインターン経由の内定・英語が得意でなくても挑戦した事例。",
-      cost: "無料（会員限定部分あり）"
-    },
-    {
-      name: "LeetCode",
-      type: "service",
-      description: "アルゴリズム/データ構造の面接対策。タグ問題・頻出問題の演習に使う。",
-      cost: "無料 / 有料（Premium）"
-    },
-    {
-      name: "AtCoder",
-      type: "service",
-      description: "競技プログラミングで実装力と速度を鍛える。過去問演習に使う。",
-      cost: "無料"
-    },
-    {
-      name: "Pramp（模擬面接）",
-      type: "service",
-      description: "ペアで模擬面接を回し、説明力・緊張耐性を鍛える。",
-      cost: "無料（枠制限あり）"
-    }
-  ],
-  tips: [
-    "演習は『解く→復習→数週間後に解き直す』までが1セット。復習日を最初からカレンダーに固定する。",
-    "技術面接は'正解'だけでなく、思考の言語化・計算量・境界条件・バグ修正が評価対象。毎回、声に出して説明する練習を入れる。",
-    "インターン経由が強いルートになり得る。3年計画なら、毎年『夏インターン応募』を必達イベントにする。",
-    "STARエピソードは早めに作り、経験が増えるたびに差し替える。最終的に15〜20本を用意する。",
-    "倍率が極端に高い前提で、Google一本足打法にしない。同時に複数社へ応募して確率を上げる。"
-  ]
-}
+// INTRO_SAMPLE_PLAN は usePlanning からインポート
 
 export default function App() {
+  // カスタムフック - UI状態
+  const {
+    showSettings, setShowSettings,
+    showHelp, setShowHelp,
+    showSectionModal, setShowSectionModal,
+    showFilterModal, setShowFilterModal,
+    showLabelModal, setShowLabelModal,
+    showProjectModal, setShowProjectModal,
+    showDueDateModal, setShowDueDateModal,
+    showDurationModal, setShowDurationModal,
+    showCommentModal, setShowCommentModal,
+    showActivityModal, setShowActivityModal,
+    showKarmaModal, setShowKarmaModal,
+    showDecomposeModal, setShowDecomposeModal,
+    showImportModal, setShowImportModal,
+    showCalendar, setShowCalendar,
+    showIntro, setShowIntro,
+    sidebarCollapsed, setSidebarCollapsed,
+    viewMode,
+    activeView, setActiveView,
+    currentTimeframe, setCurrentTimeframe,
+    selectedLabel, setSelectedLabel,
+    selectedProjectId, setSelectedProjectId,
+    activeCustomFilter, setActiveCustomFilter,
+    labelFilter, setLabelFilter,
+    changeViewMode,
+  } = useUIState()
+
+  // カスタムフック - カルマ・アクティビティ
+  const {
+    karma,
+    activityLog,
+    addActivityLog,
+    updateKarmaOnComplete,
+    updateKarmaOnUncomplete,
+    getContributionData,
+    getContributionLevel,
+    getLevelName,
+  } = useKarma()
+
+  // カスタムフック - プロジェクト・ラベル
+  const {
+    projects,
+    setProjects,
+    newProjectName,
+    setNewProjectName,
+    newProjectColor,
+    setNewProjectColor,
+    newProjectParentId,
+    setNewProjectParentId,
+    savedLabels,
+    setSavedLabels,
+    labelDefinitions,
+    setLabelDefinitions,
+    labelTodoId,
+    setLabelTodoId,
+    newLabelInput,
+    setNewLabelInput,
+    newLabelName,
+    setNewLabelName,
+    newLabelColor,
+    setNewLabelColor,
+    addProject,
+    toggleProjectFavorite,
+    getSubProjects,
+    getFavoriteProjects,
+    deleteProject,
+    getAllLabels,
+    getUniqueLabelName,
+    // openLabelModal, closeLabelModal, addLabelToTodo, removeLabelFromTodo は App.tsx内で定義
+  } = useProjects()
+
+  // カスタムフック - カレンダー・期日
+  const {
+    calendarDate,
+    setCalendarDate,
+    selectedCalendarDay,
+    setSelectedCalendarDay,
+    dueDateTodoId,
+    // setDueDateTodoId は useCalendar 内部でのみ使用（openDueDateModal経由）
+    dueDateInput,
+    setDueDateInput,
+    dueDateNotifyEnabled,
+    setDueDateNotifyEnabled,
+    dueDateNotifyBefore,
+    setDueDateNotifyBefore,
+    dueDateRecurrenceType,
+    setDueDateRecurrenceType,
+    dueDateRecurrenceDays,
+    setDueDateRecurrenceDays,
+    dueDateRecurrenceTime,
+    setDueDateRecurrenceTime,
+    dueDateMonthlyDay,
+    setDueDateMonthlyDay,
+    dueDateYearlyMonth,
+    setDueDateYearlyMonth,
+    dueDateYearlyDay,
+    setDueDateYearlyDay,
+    // formatLocalDateTime は useCalendar 内部でのみ使用
+    formatDueDate,
+    isDueDateOverdue,
+    getCalendarDays,
+    getTasksForDay: getTasksForDayFromHook,
+    isSameDay,
+    openDueDateModal: openDueDateModalFromHook,
+    setDueDate: setDueDateFromHook,
+    clearDueDate: clearDueDateFromHook,
+  } = useCalendar()
+
+  // カスタムフック - プランニング
+  const {
+    planGoal,
+    setPlanGoal,
+    planTargetDays,
+    setPlanTargetDays,
+    planTargetPreset,
+    setPlanTargetPreset,
+    planCustomDate,
+    setPlanCustomDate,
+    planResult,
+    setPlanResult,
+    planTasks,
+    setPlanTasks,
+    isGeneratingPlan,
+    setIsGeneratingPlan,
+    planError,
+    setPlanError,
+    editingPlanTaskIndex,
+    setEditingPlanTaskIndex,
+    editingPlanTaskTitle,
+    setEditingPlanTaskTitle,
+    planLabel,
+    setPlanLabel,
+    planProjectId,
+    setPlanProjectId,
+    showNewProjectInPlan,
+    setShowNewProjectInPlan,
+    newProjectNameInPlan,
+    setNewProjectNameInPlan,
+    introSamplePlanRef,
+    introPrevTimeframeRef,
+    generatePlan,
+  } = usePlanning()
+
   const [todos, setTodos] = useState<Todo[]>(loadTodos)
   const [input, setInput] = useState('')
   // タスク追加の詳細オプション
@@ -197,101 +243,56 @@ export default function App() {
   const [addYearlyMonth, setAddYearlyMonth] = useState<number>(1) // 1〜12
   const [addYearlyDay, setAddYearlyDay] = useState<number>(1) // 1〜31
   const [filter, setFilter] = useState<'all' | 'active' | 'completed'>('all')
-  const [labelFilter, setLabelFilter] = useState<string | null>(null)
+  // labelFilter, activeCustomFilter, showFilterModal は useUIState から取得
   const [customFilters, setCustomFilters] = useState<CustomFilter[]>(loadCustomFilters)
-  const [activeCustomFilter, setActiveCustomFilter] = useState<string | null>(null)
-  const [showFilterModal, setShowFilterModal] = useState(false)
   const [newFilterName, setNewFilterName] = useState('')
   const [newFilterPriority, setNewFilterPriority] = useState<Priority | null>(null)
   const [newFilterLabels, setNewFilterLabels] = useState<string[]>([])
   const [newFilterOverdue, setNewFilterOverdue] = useState(false)
   const [newFilterHasRecurrence, setNewFilterHasRecurrence] = useState(false)
   const [sections, setSections] = useState<Section[]>(loadSections)
-  const [savedLabels, setSavedLabels] = useState<string[]>(loadLabels) // タスク削除後も保持されるラベル
-  const [viewMode, setViewMode] = useState<'list' | 'board' | 'upcoming'>(loadViewMode)
-  const [showSectionModal, setShowSectionModal] = useState(false)
+  // savedLabels, labelDefinitions は useProjects から取得
+  // viewMode, showSectionModal, showSettings は useUIState から取得
   const [newSectionName, setNewSectionName] = useState('')
   const [editingDescription, setEditingDescription] = useState<string | null>(null)
   const [descriptionText, setDescriptionText] = useState('')
-  const [showSettings, setShowSettings] = useState(false)
   const kanaeSettingsSaveRef = useRef<(() => void) | null>(null)
   const [decomposing, setDecomposing] = useState<string | null>(null)
   const [decomposingTodo, setDecomposingTodo] = useState<Todo | null>(null)
   const [subtasks, setSubtasks] = useState<Subtask[]>([])
   const [selectedSubtasks, setSelectedSubtasks] = useState<Set<number>>(new Set())
-  const [showDecomposeModal, setShowDecomposeModal] = useState(false)
+  // showDecomposeModal は useUIState から取得
   const [decomposeError, setDecomposeError] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
   const [editingSubtask, setEditingSubtask] = useState<number | null>(null)
-  const [currentTimeframe, setCurrentTimeframe] = useState<ViewTimeframe>('today')
-  const [showDueDateModal, setShowDueDateModal] = useState(false)
-  const [dueDateTodoId, setDueDateTodoId] = useState<string | null>(null)
-  const [dueDateInput, setDueDateInput] = useState('')
-  const [dueDateNotifyEnabled, setDueDateNotifyEnabled] = useState(true)
-  const [dueDateNotifyBefore, setDueDateNotifyBefore] = useState(0) // 期日の何分前に通知するか
-  const [dueDateRecurrenceType, setDueDateRecurrenceType] = useState<'none' | 'daily' | 'weekly' | 'monthly' | 'yearly'>('none')
-  const [dueDateRecurrenceDays, setDueDateRecurrenceDays] = useState<number[]>([]) // 曜日（weekly用）
-  const [dueDateRecurrenceTime, setDueDateRecurrenceTime] = useState('09:00') // 繰り返しタスクの時間
-  const [dueDateMonthlyDay, setDueDateMonthlyDay] = useState(1) // 毎月の日付
-  const [dueDateYearlyMonth, setDueDateYearlyMonth] = useState(1) // 毎年の月
-  const [dueDateYearlyDay, setDueDateYearlyDay] = useState(1) // 毎年の日付
-  const [showHelp, setShowHelp] = useState(false)
-  const [showIntro, setShowIntro] = useState(() => !localStorage.getItem(INTRO_SEEN_KEY))
+  // currentTimeframe, showDueDateModal は useUIState から取得
+  // dueDateTodoId 〜 dueDateYearlyDay は useCalendar から取得
+  // showHelp, showIntro は useUIState から取得
   const [introStep, setIntroStep] = useState(0)
   const [exportResult, setExportResult] = useState<{ success: boolean; message: string } | null>(null)
-  const [showImportModal, setShowImportModal] = useState(false)
+  // showImportModal は useUIState から取得
   const [importResult, setImportResult] = useState<{ success: boolean; stats: ImportStats } | null>(null)
   const [importOptions, setImportOptions] = useState({ importCompleted: false, importPast: false, importEvents: false })
-  const [showCalendar, setShowCalendar] = useState(false)
-  const [calendarDate, setCalendarDate] = useState(new Date())
-  const [selectedCalendarDay, setSelectedCalendarDay] = useState<Date | null>(null)
-  const [showLabelModal, setShowLabelModal] = useState(false)
-  const [labelTodoId, setLabelTodoId] = useState<string | null>(null)
-  const [newLabelInput, setNewLabelInput] = useState('')
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [activeView, setActiveView] = useState<'inbox' | 'label' | 'filter' | 'project'>('inbox')
-  const [selectedLabel, setSelectedLabel] = useState<string | null>(null)
-  // プロジェクト関連
-  const [projects, setProjects] = useState<Project[]>(loadProjects)
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
-  const [showProjectModal, setShowProjectModal] = useState(false)
-  const [newProjectName, setNewProjectName] = useState('')
-  const [newProjectColor, setNewProjectColor] = useState('#e07b39')
+  // showCalendar, showLabelModal は useUIState から取得
+  // calendarDate, selectedCalendarDay は useCalendar から取得
+  // labelTodoId, newLabelInput, newLabelName, newLabelColor は useProjects から取得
+  // sidebarCollapsed, activeView, selectedLabel, selectedProjectId, showProjectModal は useUIState から取得
+  // projects, newProjectName, newProjectColor は useProjects から取得
+  // showDurationModal は useUIState から取得
   // 所要時間関連
-  const [showDurationModal, setShowDurationModal] = useState(false)
   const [durationTodoId, setDurationTodoId] = useState<string | null>(null)
   const [durationInput, setDurationInput] = useState('')
+  // showCommentModal は useUIState から取得
   // コメント関連
-  const [showCommentModal, setShowCommentModal] = useState(false)
   const [commentTodoId, setCommentTodoId] = useState<string | null>(null)
   const [newCommentText, setNewCommentText] = useState('')
-  // アクティビティ履歴関連
-  const [activityLog, setActivityLog] = useState<ActivityLog[]>(loadActivityLog)
-  const [showActivityModal, setShowActivityModal] = useState(false)
-  // カルマ関連
-  const [karma, setKarma] = useState<KarmaStats>(loadKarma)
-  const [showKarmaModal, setShowKarmaModal] = useState(false)
-  // サブプロジェクト関連
-  const [newProjectParentId, setNewProjectParentId] = useState<string | null>(null)
+  // activityLog, showActivityModal, karma, showKarmaModal は useKarma / useUIState から取得
+  // newProjectParentId は useProjects から取得
   // ドラッグ&ドロップ関連
   const [draggedTodoId, setDraggedTodoId] = useState<string | null>(null)
-  // 計画機能関連
-  const [planGoal, setPlanGoal] = useState('')
-  const [planTargetDays, setPlanTargetDays] = useState<number>(30) // デフォルト: 1ヶ月
-  const [planTargetPreset, setPlanTargetPreset] = useState<string>('30') // プリセット選択値
-  const [planCustomDate, setPlanCustomDate] = useState<string>('') // カスタム日付
-  const [planResult, setPlanResult] = useState<PlanResult | null>(null)
-  const [planTasks, setPlanTasks] = useState<PlanTask[]>([])
-  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false)
-  const [planError, setPlanError] = useState('')
-  const [editingPlanTaskIndex, setEditingPlanTaskIndex] = useState<number | null>(null)
-  const [editingPlanTaskTitle, setEditingPlanTaskTitle] = useState('')
-  const [planLabel, setPlanLabel] = useState('')
-  const [planProjectId, setPlanProjectId] = useState<string | null>(null)
-  const [showNewProjectInPlan, setShowNewProjectInPlan] = useState(false)
-  const [newProjectNameInPlan, setNewProjectNameInPlan] = useState('')
+  // 計画機能関連は usePlanning から取得
   // 削除確認関連
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
@@ -782,77 +783,7 @@ export default function App() {
     }
   }
 
-  // アクティビティログ追加ヘルパー
-  const addActivityLog = (log: Omit<ActivityLog, 'id' | 'timestamp'>) => {
-    const newLog: ActivityLog = {
-      ...log,
-      id: crypto.randomUUID(),
-      timestamp: Date.now()
-    }
-    setActivityLog(prev => {
-      const updated = [...prev, newLog]
-      saveActivityLog(updated)
-      return updated
-    })
-  }
-
-  // カルマ更新ヘルパー（タスク完了時）
-  const updateKarmaOnComplete = (taskPriority: Priority, estimatedMinutes: number | null = null) => {
-    setKarma(prev => {
-      const today = new Date().toISOString().slice(0, 10)
-      const isNewDay = prev.lastCompletedDate !== today
-      const newStreak = isNewDay ? (prev.lastCompletedDate === new Date(Date.now() - 86400000).toISOString().slice(0, 10) ? prev.streak + 1 : 1) : prev.streak
-
-      // 優先度に応じたポイント (P1=10, P2=7, P3=5, P4=3)
-      const basePoints = PRIORITY_POINTS[taskPriority]
-      // ストリークボーナス（最大7）
-      const streakBonus = Math.min(newStreak, 7)
-      // 困難度ボーナス（所要時間に応じて）
-      const difficultyBonus = getDifficultyBonus(estimatedMinutes)
-      const totalPointsEarned = basePoints + streakBonus + difficultyBonus
-
-      const newTotalPoints = prev.totalPoints + totalPointsEarned
-      const newLevel = calculateLevel(newTotalPoints)
-
-      const updated: KarmaStats = {
-        totalPoints: newTotalPoints,
-        level: newLevel,
-        streak: newStreak,
-        longestStreak: Math.max(prev.longestStreak, newStreak),
-        tasksCompleted: prev.tasksCompleted + 1,
-        tasksCompletedToday: isNewDay ? 1 : prev.tasksCompletedToday + 1,
-        lastCompletedDate: today
-      }
-      saveKarma(updated)
-      return updated
-    })
-  }
-
-  // カルマ更新ヘルパー（タスク完了取り消し時）
-  const updateKarmaOnUncomplete = (taskPriority: Priority, estimatedMinutes: number | null = null) => {
-    setKarma(prev => {
-      // 優先度に応じたポイント
-      const basePoints = PRIORITY_POINTS[taskPriority]
-      // ストリークボーナスは完了時と同じ計算（最大7）
-      const streakBonus = Math.min(prev.streak, 7)
-      // 困難度ボーナス
-      const difficultyBonus = getDifficultyBonus(estimatedMinutes)
-      const totalPointsToRemove = basePoints + streakBonus + difficultyBonus
-
-      const newTotalPoints = Math.max(0, prev.totalPoints - totalPointsToRemove)
-      const newLevel = calculateLevel(newTotalPoints)
-
-      const updated: KarmaStats = {
-        ...prev,
-        totalPoints: newTotalPoints,
-        level: newLevel,
-        tasksCompleted: Math.max(0, prev.tasksCompleted - 1),
-        tasksCompletedToday: Math.max(0, prev.tasksCompletedToday - 1)
-      }
-      saveKarma(updated)
-      return updated
-    })
-  }
+  // addActivityLog, updateKarmaOnComplete, updateKarmaOnUncomplete は useKarma から取得
 
   const toggleTodo = (id: string) => {
     setTodosHistory(prevHistory => [...prevHistory.slice(-19), todos])
@@ -1370,18 +1301,9 @@ export default function App() {
     return children.flatMap(child => [child, ...buildTree(child.id)])
   }
 
-  // 全ラベルを収集（savedLabelsとtodosから両方マージ）
-  const allLabels = [...new Set([...savedLabels, ...todos.flatMap(t => t.labels || [])])].sort()
-
-  // 「未設定」ラベルの重複を回避して一意な名前を生成
-  const getUniqueLabelName = (baseName: string): string => {
-    if (!allLabels.includes(baseName)) return baseName
-    let counter = 1
-    while (allLabels.includes(`${baseName} ${counter}`)) {
-      counter++
-    }
-    return `${baseName} ${counter}`
-  }
+  // 全ラベルを収集（useProjectsのgetAllLabelsを使用）
+  const allLabels = getAllLabels(todos)
+  // getUniqueLabelName は useProjects から取得
 
   // 繰り返しタスクがそのタブに表示されるべきかチェック
   const shouldShowRecurringInTimeframe = (todo: Todo, timeframe: Timeframe): boolean => {
@@ -1533,11 +1455,7 @@ export default function App() {
     setNewSectionName('')
   }
 
-  // ビューモード変更
-  const changeViewMode = (mode: 'list' | 'board' | 'upcoming') => {
-    setViewMode(mode)
-    saveViewMode(mode)
-  }
+  // changeViewMode は useUIState から取得
 
   // タスク説明の編集
   const startEditDescription = (todo: Todo) => {
@@ -1595,34 +1513,12 @@ export default function App() {
     }))
   }
 
-  // プロジェクト関連の関数
-  const addProject = () => {
-    const name = newProjectName.trim()
-    if (!name) return
-    const newProject: Project = {
-      id: crypto.randomUUID(),
-      name,
-      color: newProjectColor,
-      order: projects.length,
-      parentId: newProjectParentId,
-      isFavorite: false,
-      isArchived: false,
-    }
-    setProjects(prev => [...prev, newProject])
-    addActivityLog({
-      type: 'project_created',
-      projectId: newProject.id,
-      projectName: newProject.name
-    })
-    setShowProjectModal(false)
-    setNewProjectName('')
-    setNewProjectColor('#e07b39')
-    setNewProjectParentId(null)
-  }
-
-  // お気に入りトグル
-  const toggleProjectFavorite = (id: string) => {
-    setProjects(prev => prev.map(p => p.id === id ? { ...p, isFavorite: !p.isFavorite } : p))
+  // プロジェクト関連の関数（useProjectsをラップ）
+  const handleAddProject = () => {
+    addProject(
+      (log) => addActivityLog(log),
+      () => setShowProjectModal(false)
+    )
   }
 
   // プロジェクトアーカイブトグル（将来使用）
@@ -1631,24 +1527,17 @@ export default function App() {
   }
   void _toggleProjectArchive
 
-  // サブプロジェクト取得
-  const getSubProjects = (parentId: string | null): Project[] => {
-    return projects.filter(p => p.parentId === parentId && !p.isArchived).sort((a, b) => a.order - b.order)
-  }
-
-  // お気に入りプロジェクト取得
-  const getFavoriteProjects = (): Project[] => {
-    return projects.filter(p => p.isFavorite && !p.isArchived)
-  }
-
-  const deleteProject = (id: string) => {
-    setProjects(prev => prev.filter(p => p.id !== id))
-    // プロジェクトに属するタスクのprojectIdをnullに
-    updateTodosWithHistory(prev => prev.map(t => t.projectId === id ? { ...t, projectId: null } : t))
-    if (selectedProjectId === id) {
-      setSelectedProjectId(null)
-      setActiveView('inbox')
-    }
+  // deleteProjectラッパー
+  const handleDeleteProject = (id: string) => {
+    deleteProject(
+      id,
+      updateTodosWithHistory,
+      selectedProjectId,
+      () => {
+        setSelectedProjectId(null)
+        setActiveView('inbox')
+      }
+    )
   }
 
   const _setTodoProject = (todoId: string, projectId: string | null) => {
@@ -1752,259 +1641,27 @@ export default function App() {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 
-  const formatLocalDateTime = (date: Date): string => {
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-    const hours = String(date.getHours()).padStart(2, '0')
-    const minutes = String(date.getMinutes()).padStart(2, '0')
-    return `${year}-${month}-${day}T${hours}:${minutes}`
-  }
+  // formatLocalDateTime, formatDueDate, isDueDateOverdue, getCalendarDays, isSameDay は useCalendar から取得
 
+  // useCalendar のラッパー関数（App.tsx のスコープ内の変数を使用するため）
   const openDueDateModal = (todoId: string) => {
-    const todo = todos.find(t => t.id === todoId)
-    if (todo?.dueDate) {
-      const date = new Date(todo.dueDate)
-      setDueDateInput(formatLocalDateTime(date))
-      // 時間を抽出（HH:MM形式）
-      const hours = String(date.getHours()).padStart(2, '0')
-      const minutes = String(date.getMinutes()).padStart(2, '0')
-      setDueDateRecurrenceTime(`${hours}:${minutes}`)
-      // 通知設定を読み込み
-      if (todo.dueDateNotification) {
-        setDueDateNotifyEnabled(todo.dueDateNotification.enabled)
-        setDueDateNotifyBefore(todo.dueDateNotification.notifyBefore)
-      } else {
-        setDueDateNotifyEnabled(true)
-        setDueDateNotifyBefore(0)
-      }
-      // 繰り返し設定を読み込み
-      if (todo.recurrence) {
-        setDueDateRecurrenceType(todo.recurrence.type)
-        setDueDateRecurrenceDays(todo.recurrence.daysOfWeek || [])
-        setDueDateMonthlyDay(todo.recurrence.dayOfMonth || date.getDate())
-        // 毎年の場合は月と日を設定
-        setDueDateYearlyMonth(date.getMonth() + 1)
-        setDueDateYearlyDay(date.getDate())
-      } else {
-        setDueDateRecurrenceType('none')
-        setDueDateRecurrenceDays([])
-        setDueDateMonthlyDay(date.getDate())
-        setDueDateYearlyMonth(date.getMonth() + 1)
-        setDueDateYearlyDay(date.getDate())
-      }
-    } else {
-      // Default to tomorrow at 18:00
-      const tomorrow = new Date()
-      tomorrow.setDate(tomorrow.getDate() + 1)
-      tomorrow.setHours(18, 0, 0, 0)
-      setDueDateInput(formatLocalDateTime(tomorrow))
-      setDueDateNotifyEnabled(true)
-      setDueDateNotifyBefore(0)
-      setDueDateRecurrenceType('none')
-      setDueDateRecurrenceDays([])
-      setDueDateRecurrenceTime('09:00')
-      setDueDateMonthlyDay(1)
-      setDueDateYearlyMonth(new Date().getMonth() + 1)
-      setDueDateYearlyDay(1)
-    }
-    setDueDateTodoId(todoId)
-    setShowDueDateModal(true)
+    openDueDateModalFromHook(todoId, todos, setShowDueDateModal)
   }
 
   const setDueDate = () => {
-    if (!dueDateTodoId) return
-
-    let timestamp: number
-    const now = Date.now()
-    const [hours, minutes] = dueDateRecurrenceTime.split(':').map(Number)
-
-    if (dueDateRecurrenceType === 'none') {
-      // 通常タスク：datetime-localから取得
-      if (!dueDateInput) return
-      timestamp = new Date(dueDateInput).getTime()
-    } else if (dueDateRecurrenceType === 'daily') {
-      // 毎日：今日の指定時刻（過ぎていれば明日）
-      const date = new Date()
-      date.setHours(hours, minutes, 0, 0)
-      if (date.getTime() <= now) {
-        date.setDate(date.getDate() + 1)
-      }
-      timestamp = date.getTime()
-    } else if (dueDateRecurrenceType === 'weekly') {
-      // 毎週：次の該当曜日
-      if (dueDateRecurrenceDays.length === 0) return
-      const date = new Date()
-      date.setHours(hours, minutes, 0, 0)
-      const currentDay = date.getDay()
-      const sortedDays = [...dueDateRecurrenceDays].sort((a, b) => a - b)
-      let targetDay = sortedDays.find(d => d > currentDay || (d === currentDay && date.getTime() > now))
-      if (targetDay === undefined) {
-        targetDay = sortedDays[0]
-        date.setDate(date.getDate() + (7 - currentDay + targetDay))
-      } else {
-        date.setDate(date.getDate() + (targetDay - currentDay))
-      }
-      timestamp = date.getTime()
-    } else if (dueDateRecurrenceType === 'monthly') {
-      // 毎月：次の該当日
-      const date = new Date()
-      date.setDate(dueDateMonthlyDay)
-      date.setHours(hours, minutes, 0, 0)
-      if (date.getTime() <= now) {
-        date.setMonth(date.getMonth() + 1)
-      }
-      timestamp = date.getTime()
-    } else {
-      // 毎年：次の該当月日
-      const date = new Date()
-      date.setMonth(dueDateYearlyMonth - 1, dueDateYearlyDay)
-      date.setHours(hours, minutes, 0, 0)
-      if (date.getTime() <= now) {
-        date.setFullYear(date.getFullYear() + 1)
-      }
-      timestamp = date.getTime()
-    }
-
-    // 通知時刻を計算（期日 - notifyBefore分）
-    const notifyTime = timestamp - dueDateNotifyBefore * 60 * 1000
-    // 通知時刻が現在より前の場合は通知済みとして扱う（即時通知を防ぐ）
-    const notifiedAt = notifyTime <= now ? now : null
-    // 繰り返し設定を構築
-    const recurrence: RecurrencePattern | null = dueDateRecurrenceType !== 'none' ? {
-      type: dueDateRecurrenceType,
-      interval: 1,
-      ...(dueDateRecurrenceType === 'weekly' && dueDateRecurrenceDays.length > 0 ? { daysOfWeek: dueDateRecurrenceDays } : {}),
-      ...(dueDateRecurrenceType === 'monthly' ? { dayOfMonth: dueDateMonthlyDay } : {}),
-      ...(dueDateRecurrenceType === 'yearly' ? { month: dueDateYearlyMonth, dayOfMonth: dueDateYearlyDay } : {})
-    } : null
-    updateTodosWithHistory(prev => prev.map(todo =>
-      todo.id === dueDateTodoId ? {
-        ...todo,
-        dueDate: timestamp,
-        recurrence,
-        dueDateNotification: {
-          enabled: dueDateNotifyEnabled,
-          notifyBefore: dueDateNotifyBefore,
-          notifiedAt,
-          followUpCount: 0
-        }
-      } : todo
-    ))
-    setShowDueDateModal(false)
-    setDueDateTodoId(null)
-    setDueDateInput('')
-    setDueDateRecurrenceType('none')
-    setDueDateRecurrenceDays([])
+    setDueDateFromHook(updateTodosWithHistory, setShowDueDateModal)
   }
 
   const clearDueDate = (todoId: string) => {
-    updateTodosWithHistory(prev => prev.map(todo =>
-      todo.id === todoId ? { ...todo, dueDate: null, dueDateNotification: null, recurrence: null } : todo
-    ))
-    setShowDueDateModal(false)
-    setDueDateTodoId(null)
-    setDueDateInput('')
-    setDueDateRecurrenceType('none')
-    setDueDateRecurrenceDays([])
+    clearDueDateFromHook(todoId, updateTodosWithHistory, setShowDueDateModal)
   }
 
-  const formatDueDate = (timestamp: number, recurrence?: RecurrencePattern | null) => {
-    const date = new Date(timestamp)
-    const month = date.getMonth() + 1
-    const day = date.getDate()
-    const hours = date.getHours().toString().padStart(2, '0')
-    const minutes = date.getMinutes().toString().padStart(2, '0')
-    const time = `${hours}:${minutes}`
-
-    // 繰り返しタスクの場合、タイプに応じた表示形式
-    if (recurrence) {
-      const dayNames = ['日', '月', '火', '水', '木', '金', '土']
-      switch (recurrence.type) {
-        case 'daily':
-          // 毎日: 時刻のみ
-          return time
-        case 'weekly':
-          // 毎週: 曜日と時刻
-          return `${dayNames[date.getDay()]}曜 ${time}`
-        case 'monthly':
-          // 毎月: 日付と時刻
-          return `${day}日 ${time}`
-        case 'yearly':
-          // 毎年: 月と日付と時刻
-          return `${month}月${day}日 ${time}`
-      }
-    }
-
-    // 通常のタスク: 月/日 時:分
-    return `${month}/${day} ${hours}:${minutes}`
-  }
-
-  const isDueDateOverdue = (timestamp: number) => {
-    return Date.now() > timestamp
-  }
-
-  // Calendar helper functions
-  const getCalendarDays = (date: Date) => {
-    const year = date.getFullYear()
-    const month = date.getMonth()
-    const firstDay = new Date(year, month, 1)
-    const lastDay = new Date(year, month + 1, 0)
-    const startOffset = firstDay.getDay()
-    const daysInMonth = lastDay.getDate()
-
-    const days: (Date | null)[] = []
-    for (let i = 0; i < startOffset; i++) days.push(null)
-    for (let i = 1; i <= daysInMonth; i++) days.push(new Date(year, month, i))
-    return days
-  }
-
+  // getTasksForDay は todos を使用するためラッパー関数として定義
   const getTasksForDay = (date: Date) => {
-    const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
-    const dayEnd = dayStart + 24 * 60 * 60 * 1000
-    return todos.filter(t => t.dueDate && t.dueDate >= dayStart && t.dueDate < dayEnd)
+    return getTasksForDayFromHook(date, todos)
   }
 
-  const isSameDay = (d1: Date, d2: Date) => {
-    return d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate()
-  }
-
-  // GitHub-style contribution graph helpers
-  const getContributionData = () => {
-    const today = new Date()
-    const data: { date: Date; count: number }[] = []
-
-    // 過去365日分のデータを生成
-    for (let i = 364; i >= 0; i--) {
-      const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i)
-      const dayStart = date.getTime()
-      const dayEnd = dayStart + 24 * 60 * 60 * 1000
-
-      // その日に完了したタスク数をカウント（completedAtを優先、なければdueDate/createdAtで推定）
-      const completedCount = todos.filter(t => {
-        if (!t.completed) return false
-        // completedAtがある場合はそれを使用
-        if (t.completedAt && t.completedAt >= dayStart && t.completedAt < dayEnd) return true
-        // 旧データ互換: completedAtがない場合はdueDate/createdAtで推定
-        if (!t.completedAt) {
-          if (t.dueDate && t.dueDate >= dayStart && t.dueDate < dayEnd) return true
-          if (t.createdAt >= dayStart && t.createdAt < dayEnd) return true
-        }
-        return false
-      }).length
-
-      data.push({ date, count: completedCount })
-    }
-    return data
-  }
-
-  const getContributionLevel = (count: number) => {
-    if (count === 0) return 0
-    if (count <= 2) return 1
-    if (count <= 4) return 2
-    if (count <= 6) return 3
-    return 4
-  }
+  // getContributionData, getContributionLevel は useKarma から取得
 
   // Generate ICS content for a single task
   const generateICS = (todo: Todo) => {
@@ -2192,9 +1849,7 @@ END:VCALENDAR`
     setShowSettings(false)
   }
 
-  // イントロサンプル表示用の状態を保持する参照
-  const introSamplePlanRef = useRef<PlanResult | null>(null)
-  const introPrevTimeframeRef = useRef<ViewTimeframe>('today')
+  // イントロサンプル表示用の状態を保持する参照は usePlanning から取得
 
   // Highlight target element during intro
   useEffect(() => {
@@ -2292,15 +1947,22 @@ END:VCALENDAR`
       action: 'closePlanSample'
     },
     {
+      title: 'サイドバーで整理',
+      content: '左側のサイドバーで効率的に管理できます。\n\n<hl>プロジェクト</hl>：タスクをグループ化\n<hl>ラベル</hl>：タグで分類（色付き対応）\n<hl>フィルター</hl>：条件で絞り込み\n<hl>カルマ</hl>：完了でポイント獲得！',
+      icon: '📂',
+      target: '.sidebar',
+      btnTarget: null
+    },
+    {
       title: '期間で整理',
-      content: 'タスクは<hl>今日・1週間・1ヶ月・1年・計画</hl>の5つで管理。\n<hl>「計画」タブ</hl>では目標を入力するとAIが計画を自動生成します。',
+      content: 'タスクは<hl>今日・1週間・1ヶ月・1年・計画</hl>の5つで管理。\n<hl>リスト/ボード/カレンダー</hl>の3つの表示形式に切替可能。',
       icon: '📅',
       target: '.timeframe-tabs',
       btnTarget: null
     },
     {
       title: 'AI計画生成',
-      content: '下に表示されているのは<hl>実際の生成例</hl>です。\n\n（スクロールして見てみてね）\n\n<hl>現在地点・到達目標・ギャップ分析</hl>、\n達成可能性、リスク・コスト、タスクリストを自動生成します。\n\n<hl>Tavily APIキー</hl>（無料）を設定すると、\nウェブ検索で精度の高い計画を生成できます。',
+      content: '下に表示されているのは<hl>実際の生成例</hl>です。\n\n（スクロールして見てみてね）\n\n<hl>現在地点・到達目標・ギャップ分析</hl>、\n達成可能性、リスク・コスト、参考リソースを自動生成します。\n\n<hl>Tavily APIキー</hl>（無料）を設定すると、\nウェブ検索で精度の高い計画を生成できます。',
       icon: '🎯',
       target: '.plan-analysis',
       btnTarget: null,
@@ -2316,7 +1978,7 @@ END:VCALENDAR`
     },
     {
       title: '専属リマインダー',
-      content: 'AIキャラクターがリマインドしてくれます。\n\n<hl>「人格」タブ</hl>でプリセットを選択、\nまたはカスタム人格を作成できます。',
+      content: 'AIキャラクターがリマインドしてくれます。\n\n<hl>「人格」タブ</hl>でプリセットを選択、\nまたはカスタム人格を作成できます。\n\n<hl>Discord連携</hl>でDM通知も可能です。',
       icon: '💬',
       target: '.settings-modal',
       btnTarget: null,
@@ -2340,165 +2002,43 @@ END:VCALENDAR`
   return (
     <div className={'app-container' + (sidebarCollapsed ? ' sidebar-collapsed' : '')}>
       {/* サイドバー */}
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <button className="sidebar-toggle" onClick={() => setSidebarCollapsed(!sidebarCollapsed)} title={sidebarCollapsed ? '展開' : '折りたたむ'}>
-            {sidebarCollapsed ? '→' : '←'}
-          </button>
-          {!sidebarCollapsed && <h1 className="app-logo" onClick={() => { setActiveView('inbox'); setCurrentTimeframe('today'); setSelectedLabel(null); setLabelFilter(null); }} style={{ cursor: 'pointer' }}>Calm Todo</h1>}
-        </div>
-
-        {!sidebarCollapsed && (
-          <>
-            {/* ナビゲーション（固定） */}
-            <nav className="sidebar-nav">
-              <button className={'nav-item' + (activeView === 'inbox' ? ' active' : '')} onClick={() => { setActiveView('inbox'); setCurrentTimeframe('today'); setSelectedLabel(null); setLabelFilter(null); }}>
-                <span className="nav-icon">📥</span>
-                <span className="nav-label">タスク</span>
-                <span className="nav-count">{todos.filter(t => t.parentId === null && !t.completed).length}</span>
-              </button>
-            </nav>
-
-            {/* スクロール可能エリア */}
-            <div className="sidebar-content">
-            {/* お気に入りセクション */}
-            {getFavoriteProjects().length > 0 && (
-              <div className="sidebar-section">
-                <div className="section-header">
-                  <span className="section-title">⭐ お気に入り</span>
-                </div>
-                <div className="project-list">
-                  {getFavoriteProjects().map(project => (
-                    <div key={project.id} className={'project-item' + (activeView === 'project' && selectedProjectId === project.id ? ' active' : '')}>
-                      <button className="project-item-btn" onClick={() => { setActiveView('project'); setSelectedProjectId(project.id); }}>
-                        <span className="project-dot" style={{ backgroundColor: project.color }}></span>
-                        <span className="project-name">{project.name}</span>
-                        <span className="project-count">{todos.filter(t => t.projectId === project.id && !t.completed).length}</span>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* カルマセクション */}
-            <div className="sidebar-section karma-section">
-              <button className="karma-display" onClick={() => setShowKarmaModal(true)}>
-                <span className="karma-level">Lv.{karma.level}</span>
-                <span className="karma-title">{getLevelName(karma.level)}</span>
-                <span className="karma-points">{karma.totalPoints}pt</span>
-                {karma.streak > 0 && <span className="karma-streak">🔥{karma.streak}</span>}
-              </button>
-            </div>
-
-            <div className="sidebar-section">
-              <div className="section-header">
-                <span className="section-title">プロジェクト</span>
-                <button className="section-add" onClick={() => setShowProjectModal(true)} title="プロジェクト追加">+</button>
-              </div>
-              <div className="project-list">
-                {/* ルートプロジェクト（parentId === null）のみ表示、アーカイブ除く */}
-                {getSubProjects(null).map(project => (
-                  <div key={project.id}>
-                    <div className={'project-item' + (activeView === 'project' && selectedProjectId === project.id ? ' active' : '')}>
-                      <button className="project-item-btn" onClick={() => { setActiveView('project'); setSelectedProjectId(project.id); }}>
-                        <span className="project-dot" style={{ backgroundColor: project.color }}></span>
-                        <span className="project-name">{project.name}</span>
-                        <span className="project-count">{todos.filter(t => t.projectId === project.id && !t.completed).length}</span>
-                      </button>
-                      <button className="project-fav" onClick={(e) => { e.stopPropagation(); toggleProjectFavorite(project.id); }} title={project.isFavorite ? 'お気に入り解除' : 'お気に入り'}>{project.isFavorite ? '★' : '☆'}</button>
-                      <button className="project-sub-add" onClick={(e) => { e.stopPropagation(); setNewProjectParentId(project.id); setShowProjectModal(true); }} title="サブプロジェクト追加">+</button>
-                      <button className="project-delete" onClick={(e) => { e.stopPropagation(); deleteProject(project.id); }} title="削除">×</button>
-                    </div>
-                    {/* サブプロジェクト */}
-                    {getSubProjects(project.id).map(subProject => (
-                      <div key={subProject.id} className={'project-item sub-project' + (activeView === 'project' && selectedProjectId === subProject.id ? ' active' : '')}>
-                        <button className="project-item-btn" onClick={() => { setActiveView('project'); setSelectedProjectId(subProject.id); }}>
-                          <span className="project-indent">└</span>
-                          <span className="project-dot" style={{ backgroundColor: subProject.color }}></span>
-                          <span className="project-name">{subProject.name}</span>
-                          <span className="project-count">{todos.filter(t => t.projectId === subProject.id && !t.completed).length}</span>
-                        </button>
-                        <button className="project-fav" onClick={(e) => { e.stopPropagation(); toggleProjectFavorite(subProject.id); }} title={subProject.isFavorite ? 'お気に入り解除' : 'お気に入り'}>{subProject.isFavorite ? '★' : '☆'}</button>
-                        <button className="project-delete" onClick={(e) => { e.stopPropagation(); deleteProject(subProject.id); }} title="削除">×</button>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-                {projects.filter(p => !p.isArchived).length === 0 && (
-                  <div className="empty-projects">プロジェクトなし</div>
-                )}
-              </div>
-            </div>
-
-            <div className="sidebar-section">
-              <div className="section-header">
-                <span className="section-title">ラベル</span>
-              </div>
-              <div className="label-list">
-                {allLabels.map(label => (
-                  <button key={label} className={'label-item' + (activeView === 'label' && selectedLabel === label ? ' active' : '')} onClick={() => {
-                    if (activeView === 'label' && selectedLabel === label) {
-                      setActiveView('inbox')
-                      setSelectedLabel(null)
-                      setLabelFilter(null)
-                    } else {
-                      setActiveView('label')
-                      setSelectedLabel(label)
-                      setLabelFilter(label)
-                    }
-                  }}>
-                    <span className="label-dot"></span>
-                    <span className="label-name">{label}</span>
-                    <span className="label-count">{todos.filter(t => t.labels.includes(label) && !t.completed && !t.archived).length}</span>
-                  </button>
-                ))}
-                {allLabels.length === 0 && (
-                  <div className="empty-labels">ラベルなし</div>
-                )}
-              </div>
-            </div>
-
-            <div className="sidebar-section">
-              <div className="section-header">
-                <span className="section-title">フィルター</span>
-                <button className="section-add" onClick={() => setShowFilterModal(true)} title="フィルター追加">+</button>
-              </div>
-              <div className="filter-list">
-                {customFilters.map(cf => (
-                  <div key={cf.id} className={'filter-item' + (activeCustomFilter === cf.id ? ' active' : '')}>
-                    <button className="filter-item-btn" onClick={() => applyCustomFilter(cf)}>
-                      <span className="filter-icon">⚡</span>
-                      <span className="filter-name">{cf.name}</span>
-                    </button>
-                    <button className="filter-delete" onClick={(e) => { e.stopPropagation(); deleteCustomFilter(cf.id); }} title="削除">×</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            </div>
-            <div className="sidebar-footer">
-              <button className="sidebar-btn" onClick={() => setShowCalendar(true)} title="カレンダー">
-                <span className="nav-icon">🗓️</span>
-                <span className="nav-label">カレンダー</span>
-              </button>
-              <button className="sidebar-btn" onClick={() => setShowActivityModal(true)} title="アクティビティ">
-                <span className="nav-icon">📊</span>
-                <span className="nav-label">履歴</span>
-              </button>
-              <button className="sidebar-btn" onClick={() => setShowSettings(true)} title="設定">
-                <span className="nav-icon">⚙️</span>
-                <span className="nav-label">設定</span>
-              </button>
-              <button className="sidebar-btn" onClick={() => setShowHelp(true)} title="ヘルプ">
-                <span className="nav-icon">❓</span>
-                <span className="nav-label">ヘルプ</span>
-              </button>
-            </div>
-          </>
-        )}
-      </aside>
+      <Sidebar
+        sidebarCollapsed={sidebarCollapsed}
+        setSidebarCollapsed={setSidebarCollapsed}
+        activeView={activeView}
+        setActiveView={setActiveView}
+        currentTimeframe={currentTimeframe}
+        setCurrentTimeframe={setCurrentTimeframe}
+        selectedLabel={selectedLabel}
+        setSelectedLabel={setSelectedLabel}
+        labelFilter={labelFilter}
+        setLabelFilter={setLabelFilter}
+        selectedProjectId={selectedProjectId}
+        setSelectedProjectId={setSelectedProjectId}
+        todos={todos}
+        projects={projects}
+        allLabels={allLabels}
+        labelDefinitions={labelDefinitions}
+        customFilters={customFilters}
+        activeCustomFilter={activeCustomFilter}
+        karma={karma}
+        setShowKarmaModal={setShowKarmaModal}
+        setShowProjectModal={setShowProjectModal}
+        setShowLabelModal={setShowLabelModal}
+        setShowFilterModal={setShowFilterModal}
+        setShowCalendar={setShowCalendar}
+        setShowActivityModal={setShowActivityModal}
+        setShowSettings={setShowSettings}
+        setShowHelp={setShowHelp}
+        setNewProjectParentId={setNewProjectParentId}
+        toggleProjectFavorite={toggleProjectFavorite}
+        deleteProject={handleDeleteProject}
+        deleteCustomFilter={deleteCustomFilter}
+        applyCustomFilter={applyCustomFilter}
+        getFavoriteProjects={getFavoriteProjects}
+        getSubProjects={getSubProjects}
+        getLevelName={getLevelName}
+      />
 
       {/* メインコンテンツ */}
       <main className="main-content">
@@ -3033,6 +2573,15 @@ END:VCALENDAR`
                             </span>
                             <span className="resource-name">{resource.name}</span>
                             <span className="resource-cost">{resource.cost}</span>
+                            {resource.url && (
+                              <button
+                                className="resource-link-btn"
+                                onClick={() => openExternalLink(resource.url!)}
+                                title="リンクを開く"
+                              >
+                                開く →
+                              </button>
+                            )}
                           </div>
                           <p className="resource-description">{resource.description}</p>
                         </div>
@@ -3266,7 +2815,7 @@ END:VCALENDAR`
                         today.setHours(0, 0, 0, 0)
 
                         // 空欄の場合は「未設定」（重複時は「未設定 1」等）
-                        const labelName = planLabel.trim() || getUniqueLabelName('未設定')
+                        const labelName = planLabel.trim() || getUniqueLabelName('未設定', todos)
                         const taskLabels = [labelName]
 
                         const newTodos: Todo[] = selectedTasks.map((task, index) => {
@@ -3384,53 +2933,14 @@ END:VCALENDAR`
 
         {/* ボードビュー */}
         {viewMode === 'board' && (
-          <div className="board-view">
-            <div className="board-column">
-              <div className="board-column-header">
-                <h3>未着手</h3>
-                <span className="board-column-count">{displayTodos.filter(t => !t.completed && t.parentId === null).length}</span>
-              </div>
-              <div className="board-column-tasks">
-                {displayTodos.filter(t => !t.completed && t.parentId === null).map(todo => (
-                  <div key={todo.id} className={'board-task priority-' + priorityColor(todo.priority)}>
-                    <div className="board-task-header">
-                      <button className="checkbox-small" onClick={() => toggleTodo(todo.id)}></button>
-                      <span className={'priority-dot priority-' + priorityColor(todo.priority)}></span>
-                    </div>
-                    <div className="board-task-title">{todo.text}</div>
-                    {todo.dueDate && (
-                      <div className={'board-task-due' + (isDueDateOverdue(todo.dueDate) ? ' overdue' : '')}>
-                        📅 {formatDueDate(todo.dueDate, todo.recurrence)}
-                      </div>
-                    )}
-                    {todo.labels && todo.labels.length > 0 && (
-                      <div className="board-task-labels">
-                        {todo.labels.map((label, i) => (
-                          <span key={i} className="label-badge-small">#{label}</span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="board-column completed-column">
-              <div className="board-column-header">
-                <h3>完了</h3>
-                <span className="board-column-count">{displayTodos.filter(t => t.completed && t.parentId === null).length}</span>
-              </div>
-              <div className="board-column-tasks">
-                {displayTodos.filter(t => t.completed && t.parentId === null).map(todo => (
-                  <div key={todo.id} className="board-task completed">
-                    <div className="board-task-header">
-                      <button className="checkbox-small checked" onClick={() => toggleTodo(todo.id)}>✓</button>
-                    </div>
-                    <div className="board-task-title">{todo.text}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+          <BoardView
+            displayTodos={displayTodos}
+            labelDefinitions={labelDefinitions}
+            toggleTodo={toggleTodo}
+            priorityColor={priorityColor}
+            formatDueDate={formatDueDate}
+            isDueDateOverdue={isDueDateOverdue}
+          />
         )}
 
         {/* Upcomingビュー */}
@@ -3474,9 +2984,10 @@ END:VCALENDAR`
                             <span className="upcoming-task-text">{todo.text}</span>
                             {todo.labels && todo.labels.length > 0 && (
                               <span className="upcoming-task-labels">
-                                {todo.labels.map((label, i) => (
-                                  <span key={i} className="label-badge-small">#{label}</span>
-                                ))}
+                                {todo.labels.map((label, i) => {
+                                  const def = labelDefinitions.find(ld => ld.name === label)
+                                  return <span key={i} className="label-badge-small" style={def?.color ? { backgroundColor: def.color } : undefined}>#{label}</span>
+                                })}
                               </span>
                             )}
                           </div>
@@ -3654,12 +3165,15 @@ END:VCALENDAR`
                   </span>
                 )}
                 <div className="labels-inline">
-                  {todo.labels && todo.labels.map((label, i) => (
-                    <span key={i} className="label-tag">
-                      <span className="label-text" onClick={(e) => { e.stopPropagation(); setLabelFilter(label); }}>#{label}</span>
-                      <button className="label-remove" onClick={(e) => { e.stopPropagation(); removeLabelFromTodo(todo.id, label); }} title="ラベルを削除">×</button>
-                    </span>
-                  ))}
+                  {todo.labels && todo.labels.map((label, i) => {
+                    const def = labelDefinitions.find(ld => ld.name === label)
+                    return (
+                      <span key={i} className="label-tag" style={def?.color ? { backgroundColor: def.color } : undefined}>
+                        <span className="label-text" onClick={(e) => { e.stopPropagation(); setLabelFilter(label); }}>#{label}</span>
+                        <button className="label-remove" onClick={(e) => { e.stopPropagation(); removeLabelFromTodo(todo.id, label); }} title="ラベルを削除">×</button>
+                      </span>
+                    )
+                  })}
                   <button className="label-add-btn" onClick={() => openLabelModal(todo.id)} title="ラベルを追加">+</button>
                 </div>
                 <button className="edit-btn" onClick={() => startEdit(todo)} title="編集">✎</button>
@@ -3847,6 +3361,81 @@ END:VCALENDAR`
         </div>
       )}
 
+      {/* ラベル定義追加モーダル（サイドバーから） */}
+      {showLabelModal && !labelTodoId && (
+        <div className="modal-overlay" onClick={() => { setShowLabelModal(false); setNewLabelName(''); setNewLabelColor(LABEL_COLORS[0]); }}>
+          <div className="modal label-modal" onClick={e => e.stopPropagation()}>
+            <h2>新しいラベル</h2>
+            <p className="modal-description">色付きのラベルを作成できます</p>
+            <input
+              type="text"
+              className="label-input"
+              placeholder="ラベル名..."
+              value={newLabelName}
+              onChange={e => setNewLabelName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && newLabelName.trim()) {
+                  const newDef: LabelDefinition = {
+                    id: crypto.randomUUID(),
+                    name: newLabelName.trim(),
+                    color: newLabelColor,
+                    order: labelDefinitions.length,
+                  }
+                  const updated = [...labelDefinitions, newDef]
+                  setLabelDefinitions(updated)
+                  saveLabelDefinitions(updated)
+                  if (!savedLabels.includes(newLabelName.trim())) {
+                    const updatedLabels = [...savedLabels, newLabelName.trim()].sort()
+                    setSavedLabels(updatedLabels)
+                    saveLabels(updatedLabels)
+                  }
+                  setShowLabelModal(false)
+                  setNewLabelName('')
+                  setNewLabelColor(LABEL_COLORS[0])
+                }
+              }}
+              autoFocus
+              style={{ marginBottom: 'var(--space-md)' }}
+            />
+            <div className="project-color-picker" style={{ marginBottom: 'var(--space-lg)' }}>
+              <label>色:</label>
+              <div className="color-options">
+                {LABEL_COLORS.map(color => (
+                  <button
+                    key={color}
+                    className={'color-option' + (newLabelColor === color ? ' active' : '')}
+                    style={{ backgroundColor: color }}
+                    onClick={() => setNewLabelColor(color)}
+                  />
+                ))}
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="modal-btn secondary" onClick={() => { setShowLabelModal(false); setNewLabelName(''); setNewLabelColor(LABEL_COLORS[0]); }}>キャンセル</button>
+              <button className="modal-btn primary" disabled={!newLabelName.trim()} onClick={() => {
+                const newDef: LabelDefinition = {
+                  id: crypto.randomUUID(),
+                  name: newLabelName.trim(),
+                  color: newLabelColor,
+                  order: labelDefinitions.length,
+                }
+                const updated = [...labelDefinitions, newDef]
+                setLabelDefinitions(updated)
+                saveLabelDefinitions(updated)
+                if (!savedLabels.includes(newLabelName.trim())) {
+                  const updatedLabels = [...savedLabels, newLabelName.trim()].sort()
+                  setSavedLabels(updatedLabels)
+                  saveLabels(updatedLabels)
+                }
+                setShowLabelModal(false)
+                setNewLabelName('')
+                setNewLabelColor(LABEL_COLORS[0])
+              }}>作成</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ラベル追加モーダル */}
       {showLabelModal && labelTodoId && (
         <div className="modal-overlay" onClick={closeLabelModal}>
@@ -3887,12 +3476,15 @@ END:VCALENDAR`
             <div className="current-labels">
               <p className="current-labels-title">このタスクのラベル:</p>
               <div className="current-labels-list">
-                {todos.find(t => t.id === labelTodoId)?.labels.map((label, i) => (
-                  <span key={i} className="current-label-tag">
-                    #{label}
-                    <button className="current-label-remove" onClick={() => removeLabelFromTodo(labelTodoId, label)}>×</button>
-                  </span>
-                ))}
+                {todos.find(t => t.id === labelTodoId)?.labels.map((label, i) => {
+                  const def = labelDefinitions.find(ld => ld.name === label)
+                  return (
+                    <span key={i} className="current-label-tag" style={def?.color ? { backgroundColor: def.color } : undefined}>
+                      #{label}
+                      <button className="current-label-remove" onClick={() => removeLabelFromTodo(labelTodoId, label)}>×</button>
+                    </span>
+                  )
+                })}
                 {todos.find(t => t.id === labelTodoId)?.labels.length === 0 && (
                   <span className="no-labels">ラベルがありません</span>
                 )}
@@ -4297,7 +3889,7 @@ END:VCALENDAR`
                   </div>
                   <div className="contribution-grid">
                     {(() => {
-                      const data = getContributionData()
+                      const data = getContributionData(todos)
                       // 週ごとにグループ化（日曜始まり）
                       const weeks: { date: Date; count: number }[][] = []
                       let currentWeek: { date: Date; count: number }[] = []
@@ -4533,7 +4125,7 @@ END:VCALENDAR`
                 placeholder="プロジェクト名..."
                 value={newProjectName}
                 onChange={e => setNewProjectName(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && addProject()}
+                onKeyDown={e => e.key === 'Enter' && handleAddProject()}
                 autoFocus
               />
               <div className="project-color-picker">
@@ -4563,7 +4155,7 @@ END:VCALENDAR`
             </div>
             <div className="modal-actions">
               <button className="modal-btn secondary" onClick={() => { setShowProjectModal(false); setNewProjectParentId(null); }}>キャンセル</button>
-              <button className="modal-btn primary" onClick={addProject} disabled={!newProjectName.trim()}>作成</button>
+              <button className="modal-btn primary" onClick={handleAddProject} disabled={!newProjectName.trim()}>作成</button>
             </div>
           </div>
         </div>
@@ -4682,10 +4274,26 @@ END:VCALENDAR`
                 <div className="guide-section">
                   <h4>優先度ボーナス（基本ポイント）</h4>
                   <div className="guide-table">
-                    <div className="guide-row"><span className="priority-badge p1">P1</span><span>10 pt</span></div>
-                    <div className="guide-row"><span className="priority-badge p2">P2</span><span>7 pt</span></div>
-                    <div className="guide-row"><span className="priority-badge p3">P3</span><span>5 pt</span></div>
-                    <div className="guide-row"><span className="priority-badge p4">P4</span><span>3 pt</span></div>
+                    <div className="guide-row" style={{ display: 'grid', gridTemplateColumns: '50px 1fr auto', gap: '8px' }}>
+                      <span className="priority-badge priority-p1" style={{ opacity: 1 }}>P1</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>緊急</span>
+                      <span style={{ fontWeight: 600, color: 'var(--accent-primary)' }}>10 pt</span>
+                    </div>
+                    <div className="guide-row" style={{ display: 'grid', gridTemplateColumns: '50px 1fr auto', gap: '8px' }}>
+                      <span className="priority-badge priority-p2" style={{ opacity: 1 }}>P2</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>高</span>
+                      <span style={{ fontWeight: 600, color: 'var(--accent-primary)' }}>7 pt</span>
+                    </div>
+                    <div className="guide-row" style={{ display: 'grid', gridTemplateColumns: '50px 1fr auto', gap: '8px' }}>
+                      <span className="priority-badge priority-p3" style={{ opacity: 1 }}>P3</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>中</span>
+                      <span style={{ fontWeight: 600, color: 'var(--accent-primary)' }}>5 pt</span>
+                    </div>
+                    <div className="guide-row" style={{ display: 'grid', gridTemplateColumns: '50px 1fr auto', gap: '8px' }}>
+                      <span className="priority-badge priority-p4" style={{ opacity: 1 }}>P4</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>低</span>
+                      <span style={{ fontWeight: 600, color: 'var(--accent-primary)' }}>3 pt</span>
+                    </div>
                   </div>
                 </div>
                 <div className="guide-section">

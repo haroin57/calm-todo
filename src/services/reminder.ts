@@ -1574,18 +1574,96 @@ export function startReminderService(
       if (task.parentId !== null && task.parentId !== undefined) continue
       if (task.completed || task.status === 'completed') continue
 
-      // 期日通知が無効または設定がない場合はスキップ
-      if (!task.dueDateNotification?.enabled) continue
+      // 繰り返しタスクかどうかをチェック
+      const hasRecurrence = !!task.recurrence
+
+      // 期日通知が無効で、かつ繰り返しタスクでもない場合はスキップ
+      if (!task.dueDateNotification?.enabled && !hasRecurrence) {
+        console.log(`[Reminder] Skip (no dueDateNotification and no recurrence): ${task.title}`, { dueDateNotification: task.dueDateNotification })
+        continue
+      }
 
       const notification = task.dueDateNotification
 
-      // 最小通知間隔チェック
+      // 繰り返しタスクの場合（dueDateNotificationがない場合の専用処理）
+      if (hasRecurrence && !notification) {
+        // 同じタスクへの1日の通知回数チェック
+        if (!canNotifySameTask(task.id, timingConfig)) {
+          console.log(`[Reminder] Skip recurrence (daily limit): ${task.title}`)
+          continue
+        }
+
+        // 今日まだ通知していなければ送信
+        const shouldSendDesktop = currentConfig.desktopNotificationEnabled && shouldSendReminder(task.id, false, 'desktop')
+        const shouldSendDiscord = currentConfig.discordEnabled && shouldSendReminder(task.id, false, 'discord')
+
+        if (shouldSendDesktop || shouldSendDiscord) {
+          console.log(`[Reminder] Processing recurrence task: ${task.title}`, { type: task.recurrence?.type })
+
+          // デスクトップ通知
+          if (shouldSendDesktop) {
+            try {
+              let memoryContext = ''
+              if (currentConfig.useMemory && currentConfig.memoryFilePath) {
+                const memory = await loadMemory(currentConfig.memoryFilePath)
+                memoryContext = extractMemoryContext(memory)
+              }
+              const message = await generateReminderMessageWithPersona(
+                { id: task.id, title: task.title, dueDate: task.dueDate, status: task.status || 'pending', recurrence: task.recurrence },
+                false,
+                memoryContext,
+                currentConfig
+              )
+              const title = '🔄 習慣リマインダー'
+              await showNotification(title, message)
+              markReminderSent(task.id, false, 'desktop')
+              console.log(`[Reminder] Recurrence desktop notification sent: ${task.title}`)
+            } catch (error) {
+              console.error(`[Reminder] Recurrence desktop notification failed: ${task.title}`, error)
+              // フォールバック
+              const fallbackMsg = getPersonaNotificationMessage(task.title, 'reminder', 0, true)
+              try {
+                await showNotification(fallbackMsg.title, fallbackMsg.body)
+                markReminderSent(task.id, false, 'desktop')
+              } catch (fallbackError) {
+                console.error(`[Reminder] Recurrence fallback also failed: ${task.title}`, fallbackError)
+              }
+            }
+          }
+
+          // Discord通知
+          if (shouldSendDiscord) {
+            try {
+              await sendReminder({ ...task, status: task.status || 'pending' })
+              markReminderSent(task.id, false, 'discord')
+              console.log(`[Reminder] Recurrence Discord DM sent: ${task.title}`)
+            } catch (error) {
+              console.error(`[Reminder] Recurrence Discord DM failed: ${task.title}`, error)
+            }
+          }
+
+          incrementTaskNotificationCount(task.id)
+        } else {
+          console.log(`[Reminder] Skip recurrence (already sent today): ${task.title}`)
+        }
+        continue
+      }
+
+      // dueDateNotificationがない場合はスキップ（繰り返しタスクは上で処理済み）
+      if (!notification) {
+        console.log(`[Reminder] Skip (no dueDateNotification after recurrence): ${task.title}`)
+        continue
+      }
+
+      // 最小通知間隔チェック（dueDateNotificationがある場合）
       if (!hasMinIntervalPassed(notification.notifiedAt, timingConfig)) {
+        console.log(`[Reminder] Skip (min interval): ${task.title}`)
         continue
       }
 
       // 同じタスクへの1日の通知回数チェック
       if (!canNotifySameTask(task.id, timingConfig)) {
+        console.log(`[Reminder] Skip (daily limit): ${task.title}`)
         continue
       }
 
@@ -1597,7 +1675,17 @@ export function startReminderService(
       const dueDate = resolveDueDate(task.dueDate)
       const dueDateTimestamp = dueDate ? dueDate.getTime() : null
 
-      if (!dueDateTimestamp) continue
+      if (!dueDateTimestamp) {
+        console.log(`[Reminder] Skip (no dueDate): ${task.title}`, { dueDate: task.dueDate })
+        continue
+      }
+
+      console.log(`[Reminder] Checking: ${task.title}`, {
+        dueDate: new Date(dueDateTimestamp).toLocaleString(),
+        notifyBefore: notification.notifyBefore,
+        notifiedAt: notification.notifiedAt ? new Date(notification.notifiedAt).toLocaleString() : null,
+        recurrence: task.recurrence?.type
+      })
 
       // 通知時刻を計算（期日 - notifyBefore分）
       const notifyTime = dueDateTimestamp - notification.notifyBefore * 60 * 1000
